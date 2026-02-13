@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
 use egui::{Response, Ui};
-use facet::{Def, Facet, Shape, StructKind, Type, UserType};
+use facet::{Def, Facet, StructKind, Type, UserType};
+#[cfg(feature = "dyn_trait")]
+use facet::Shape;
 use facet_reflect::Poke;
 
 // ============================================================================
@@ -244,33 +246,144 @@ where
             }
 
             Def::Option(option_def) => {
-                let inner_type = option_def.t().type_identifier;
-                ui.horizontal(|ui| {
-                    ui.label(format!("Option<{}>", inner_type));
-                    // TODO: implement Option editing with is_some/get_value vtable
-                    ui.label("(not yet implemented)")
-                })
-                .response
+                let inner_shape = option_def.t();
+                let inner_type = inner_shape.type_identifier;
+
+                // Use as_peek() to get a Peek, then into_option()
+                let peek = poke.as_peek();
+                if let Ok(peek_option) = peek.into_option() {
+                    if let Some(inner_peek) = peek_option.value() {
+                        // It's Some - show the inner value (read-only for now)
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Option<{}>: Some", inner_type));
+                        });
+                        ui.indent("option_inner", |ui| {
+                            ui.label(format!("{}", inner_peek));
+                        });
+                    } else {
+                        // It's None
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Option<{}>: None", inner_type));
+                        });
+                    }
+                } else {
+                    ui.label(format!("Option<{}> (access error)", inner_type));
+                }
+
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
             }
 
             Def::Result(result_def) => {
-                let ok_type = result_def.t().type_identifier;
-                let err_type = result_def.e().type_identifier;
-                ui.label(format!("Result<{}, {}>", ok_type, err_type))
+                let ok_shape = result_def.t();
+                let err_shape = result_def.e();
+                let ok_type = ok_shape.type_identifier;
+                let err_type = err_shape.type_identifier;
+
+                // Use as_peek() to get a Peek, then into_result()
+                let peek = poke.as_peek();
+                if let Ok(peek_result) = peek.into_result() {
+                    if let Some(ok_peek) = peek_result.ok() {
+                        // It's Ok (read-only display)
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Result<{}, {}>: Ok", ok_type, err_type));
+                        });
+                        ui.indent("result_ok", |ui| {
+                            ui.label(format!("{}", ok_peek));
+                        });
+                    } else if let Some(err_peek) = peek_result.err() {
+                        // It's Err (read-only display)
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Result<{}, {}>: Err", ok_type, err_type));
+                        });
+                        ui.indent("result_err", |ui| {
+                            ui.label(format!("{}", err_peek));
+                        });
+                    } else {
+                        ui.label(format!("Result<{}, {}> (invalid state)", ok_type, err_type));
+                    }
+                } else {
+                    ui.label(format!("Result<{}, {}> (access error)", ok_type, err_type));
+                }
+
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
             }
 
             Def::Map(map_def) => {
                 let k_type = map_def.k().type_identifier;
                 let v_type = map_def.v().type_identifier;
-                ui.label(format!("Map<{}, {}> (not yet implemented)", k_type, v_type))
+
+                egui::CollapsingHeader::new(format!("Map<{}, {}>", k_type, v_type))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        // Use Peek for read-only iteration
+                        let peek = poke.as_peek();
+                        if let Ok(peek_map) = peek.into_map() {
+                            let mut count = 0;
+                            for (key, value) in peek_map.iter() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("[{}]", key));
+                                    ui.label(format!("{}", value));
+                                });
+                                count += 1;
+                            }
+                            if count == 0 {
+                                ui.label("(empty)");
+                            }
+                        }
+                    })
+                    .header_response
             }
 
             Def::Set(set_def) => {
                 let t_type = set_def.t().type_identifier;
-                ui.label(format!("Set<{}> (not yet implemented)", t_type))
+
+                egui::CollapsingHeader::new(format!("Set<{}>", t_type))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        // Use Peek for read-only iteration
+                        let peek = poke.as_peek();
+                        if let Ok(peek_set) = peek.into_set() {
+                            let mut count = 0;
+                            for value in peek_set.iter() {
+                                ui.label(format!("{}", value));
+                                count += 1;
+                            }
+                            if count == 0 {
+                                ui.label("(empty)");
+                            }
+                        }
+                    })
+                    .header_response
             }
 
-            Def::Pointer(_) => ui.label(format!("pointer: {}", shape.type_identifier)),
+            Def::Pointer(pointer_def) => {
+                let type_name = shape.type_identifier;
+
+                // pointee is Option<&Shape>, so handle it appropriately
+                if let Some(pointee_shape) = pointer_def.pointee {
+                    egui::CollapsingHeader::new(format!("{}<{}>", type_name, pointee_shape.type_identifier))
+                        .id_salt(ui.next_auto_id())
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            // Use Peek for read-only view of pointer content
+                            let peek = poke.as_peek();
+                            if let Ok(peek_ptr) = peek.into_pointer() {
+                                // Use borrow_inner to access the pointed-to value
+                                if let Some(inner_peek) = peek_ptr.borrow_inner() {
+                                    ui.label(format!("{}", inner_peek));
+                                } else {
+                                    ui.label(format!("-> {}", pointee_shape.type_identifier));
+                                }
+                            } else {
+                                ui.label("(inaccessible)");
+                            }
+                        })
+                        .header_response
+                } else {
+                    // Opaque pointer with unknown pointee
+                    ui.label(format!("{} (opaque pointer)", type_name))
+                }
+            }
 
             Def::NdArray(_) => ui.label(format!("ndarray: {}", shape.type_identifier)),
 
