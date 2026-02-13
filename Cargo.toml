@@ -1,0 +1,20 @@
+[package]
+name = "facet-egui"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+dyn_trait = []
+
+[dependencies]
+egui = { version = "0.33.3", default-features = false }
+facet = { version = "0.43.2" }
+facet-reflect = "0.43.2"
+
+[dev-dependencies]
+eframe = "0.33"
+
+[[example]]
+name = "dyn_trait"
+required-features = ["dyn_trait"]
