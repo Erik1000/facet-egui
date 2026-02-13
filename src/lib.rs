@@ -1,9 +1,9 @@
 use std::marker::PhantomData;
 
 use egui::{Response, Ui};
-use facet::{Def, Facet, StructKind, Type, UserType};
 #[cfg(feature = "dyn_trait")]
 use facet::Shape;
+use facet::{Def, Facet, StructKind, Type, UserType};
 use facet_reflect::Poke;
 
 // ============================================================================
@@ -87,6 +87,119 @@ pub fn poke_from_mut<'a>(obj: &'a mut dyn FacetShape) -> Poke<'a, 'static> {
     // - lifetime 'a is valid for the duration of the borrow
     unsafe { Poke::from_raw_parts(PtrMut::new(data_ptr), shape) }
 }
+
+// ============================================================================
+// Map UI helpers - generated via macro for common HashMap<String, V> types
+// ============================================================================
+
+macro_rules! impl_string_map_ui {
+    ($fn_name:ident, $value_type:ty, $default_value:expr, $editor:expr) => {
+        fn $fn_name(map: &mut std::collections::HashMap<String, $value_type>, ui: &mut Ui) {
+            let mut keys_to_remove = Vec::new();
+            let mut entries: Vec<_> = map.iter_mut().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (key, value) in entries {
+                ui.horizontal(|ui| {
+                    ui.label(format!("[{}]", key));
+                    #[allow(clippy::redundant_closure_call)]
+                    ($editor)(value, ui);
+                    if ui.small_button("🗑").clicked() {
+                        keys_to_remove.push(key.clone());
+                    }
+                });
+            }
+
+            for key in keys_to_remove {
+                map.remove(&key);
+            }
+
+            if map.is_empty() {
+                ui.label("(empty)");
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("+ Add entry").clicked() {
+                    let mut i = 0;
+                    loop {
+                        let new_key = format!("key_{}", i);
+                        if !map.contains_key(&new_key) {
+                            map.insert(new_key, $default_value);
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+            });
+        }
+    };
+}
+
+impl_string_map_ui!(
+    render_string_string_map_ui,
+    String,
+    String::new(),
+    |v: &mut String, ui: &mut Ui| {
+        ui.text_edit_singleline(v);
+    }
+);
+impl_string_map_ui!(
+    render_string_i32_map_ui,
+    i32,
+    0i32,
+    |v: &mut i32, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_i64_map_ui,
+    i64,
+    0i64,
+    |v: &mut i64, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_u32_map_ui,
+    u32,
+    0u32,
+    |v: &mut u32, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_u64_map_ui,
+    u64,
+    0u64,
+    |v: &mut u64, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_f32_map_ui,
+    f32,
+    0.0f32,
+    |v: &mut f32, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_f64_map_ui,
+    f64,
+    0.0f64,
+    |v: &mut f64, ui: &mut Ui| {
+        ui.add(egui::DragValue::new(v));
+    }
+);
+impl_string_map_ui!(
+    render_string_bool_map_ui,
+    bool,
+    false,
+    |v: &mut bool, ui: &mut Ui| {
+        ui.checkbox(v, "");
+    }
+);
 
 pub struct FacetProbe<'a, 'f, T> {
     phantom: PhantomData<&'f ()>,
@@ -309,25 +422,61 @@ where
             }
 
             Def::Map(map_def) => {
-                let k_type = map_def.k().type_identifier;
-                let v_type = map_def.v().type_identifier;
+                use std::collections::HashMap;
+
+                let k_shape = map_def.k();
+                let v_shape = map_def.v();
+                let k_type = k_shape.type_identifier;
+                let v_type = v_shape.type_identifier;
 
                 egui::CollapsingHeader::new(format!("Map<{}, {}>", k_type, v_type))
                     .default_open(false)
                     .show(ui, |ui| {
-                        // Use Peek for read-only iteration
-                        let peek = poke.as_peek();
-                        if let Ok(peek_map) = peek.into_map() {
-                            let mut count = 0;
-                            for (key, value) in peek_map.iter() {
-                                ui.horizontal(|ui| {
-                                    ui.label(format!("[{}]", key));
-                                    ui.label(format!("{}", value));
-                                });
-                                count += 1;
-                            }
-                            if count == 0 {
-                                ui.label("(empty)");
+                        // Try common HashMap<String, V> types with full editing support
+                        let handled = if let Ok(map) = poke.get_mut::<HashMap<String, String>>() {
+                            render_string_string_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, i32>>() {
+                            render_string_i32_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, i64>>() {
+                            render_string_i64_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, u32>>() {
+                            render_string_u32_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, u64>>() {
+                            render_string_u64_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, f32>>() {
+                            render_string_f32_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, f64>>() {
+                            render_string_f64_map_ui(map, ui);
+                            true
+                        } else if let Ok(map) = poke.get_mut::<HashMap<String, bool>>() {
+                            render_string_bool_map_ui(map, ui);
+                            true
+                        } else {
+                            false
+                        };
+
+                        if !handled {
+                            // Fall back to read-only display using Peek
+                            let peek = poke.as_peek();
+                            if let Ok(peek_map) = peek.into_map() {
+                                let mut count = 0;
+                                for (key, value) in peek_map.iter() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("[{}]", key));
+                                        ui.label(format!("{}", value));
+                                    });
+                                    count += 1;
+                                }
+                                if count == 0 {
+                                    ui.label("(empty)");
+                                }
+                                ui.label("(read-only: type not directly editable)");
                             }
                         }
                     })
@@ -361,24 +510,27 @@ where
 
                 // pointee is Option<&Shape>, so handle it appropriately
                 if let Some(pointee_shape) = pointer_def.pointee {
-                    egui::CollapsingHeader::new(format!("{}<{}>", type_name, pointee_shape.type_identifier))
-                        .id_salt(ui.next_auto_id())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            // Use Peek for read-only view of pointer content
-                            let peek = poke.as_peek();
-                            if let Ok(peek_ptr) = peek.into_pointer() {
-                                // Use borrow_inner to access the pointed-to value
-                                if let Some(inner_peek) = peek_ptr.borrow_inner() {
-                                    ui.label(format!("{}", inner_peek));
-                                } else {
-                                    ui.label(format!("-> {}", pointee_shape.type_identifier));
-                                }
+                    egui::CollapsingHeader::new(format!(
+                        "{}<{}>",
+                        type_name, pointee_shape.type_identifier
+                    ))
+                    .id_salt(ui.next_auto_id())
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        // Use Peek for read-only view of pointer content
+                        let peek = poke.as_peek();
+                        if let Ok(peek_ptr) = peek.into_pointer() {
+                            // Use borrow_inner to access the pointed-to value
+                            if let Some(inner_peek) = peek_ptr.borrow_inner() {
+                                ui.label(format!("{}", inner_peek));
                             } else {
-                                ui.label("(inaccessible)");
+                                ui.label(format!("-> {}", pointee_shape.type_identifier));
                             }
-                        })
-                        .header_response
+                        } else {
+                            ui.label("(inaccessible)");
+                        }
+                    })
+                    .header_response
                 } else {
                     // Opaque pointer with unknown pointee
                     ui.label(format!("{} (opaque pointer)", type_name))
