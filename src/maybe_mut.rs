@@ -2,9 +2,8 @@ use derive_more::{Deref, DerefMut, From};
 use facet::{Def, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
-/// Some reference to `T` that may be `mut` or not.
-///
-/// This enum mainly exists for better UX and easier API design
+/// Some reference to a type implement [`Facet`](facet::Facet) that may be
+/// `mut` or not.
 #[derive(From)]
 #[repr(C)]
 pub enum MaybeMut<'mem, 'facet> {
@@ -57,15 +56,23 @@ pub struct Guard<'lock_mem, 'facet> {
     #[deref_mut]
     data: MaybeMut<'lock_mem, 'facet>,
 }
+
 impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// Try to turn [`MaybeMut::Not`] into [`MaybeMut::Mut`]
+    ///
+    /// The returned [`MaybeMut`] may contain a different [`Shape`].
+    /// Which exact [`Shape`] it is, depends on what the input type was.
+    ///
+    /// One edge case is if you pass a `&mut Arc<RwLock<String>` the type will
+    /// not be changed to `&mut String`. But if you pass a `&Arc<RwLock<String>`
+    /// due to locking etc, it will be a `&mut String`.
     ///
     /// If the underlying type is something that can be write locked,
     /// for example an `RwLock` or `Mutex`, this method creates a lock on it.
     ///
     /// If we already have [`MaybeMut::Mut`] this is a no-op.
     ///
-    /// If we have [`MaybeMut::Not`] and the [`Shape`](facet::Shape) of
+    /// If we have [`MaybeMut::Not`] and the [`Shape`] of
     /// `T` does not contain a [`PointerDef`](facet::PointerDef) which
     /// has a vtable with a `write_fn` we can call with `&T`, this method
     /// returns [`Err(MaybeMut::Not)`](Err). In this case, besides the lookup,
@@ -75,6 +82,8 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     ///
     /// It is very important that you drop the [`Guard`] as soon as possible
     /// to free the lock
+    ///
+    /// [`Shape`]: facet::Shape
     pub fn make_mut<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
     where
         'mem: 'lock,

@@ -1,5 +1,3 @@
-use std::ops::DerefMut;
-
 use derive_more::{Deref, DerefMut, From};
 use egui::Ui;
 use facet::Facet;

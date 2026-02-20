@@ -47,7 +47,7 @@ impl eframe::App for App {
             let t = &self.shared_string;
             FacetProbe::new(&t).show(ui);
             ui.label("Normal:");
-            FacetProbe::new(&mut self.shared_string).show(ui);
+            FacetProbe::new(&mut self.normal).show(ui);
         });
 
         // Right panel
@@ -75,6 +75,9 @@ impl eframe::App for App {
             if let Ok(value) = self.shared_string.read() {
                 ui.label(format!("Current value: {}", *value));
             }
+
+            ui.label("Normal");
+            ui.text_edit_multiline(&mut self.normal);
         });
     }
 }
