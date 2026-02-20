@@ -4,17 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
-dyn_trait = []
+default = ["std"]
+std = ["facet/std", "facet-reflect/std", "thiserror/std"]
 
 [dependencies]
 egui = { version = "0.33.3", default-features = false }
-facet = { version = "0.43.2" }
-facet-reflect = "0.43.2"
+facet = { version = "0.43.2", default-features = false, features = ["alloc"] }
+facet-reflect = { version = "0.43.2", default-features = false, features = [
+    "alloc",
+] }
+
+derive_more = { version = "2.1", default-features = false, features = [
+    "from",
+    "deref",
+    "deref_mut",
+    "debug",
+] }
+
+thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 eframe = "0.33"
-
-[[example]]
-name = "dyn_trait"
-required-features = ["dyn_trait"]
