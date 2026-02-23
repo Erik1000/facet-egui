@@ -2,7 +2,7 @@ use derive_more::{Deref, DerefMut, From};
 use facet::{Def, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
-/// Some reference to a type implement [`Facet`](facet::Facet) that may be
+/// Some reference to a type that implements [`Facet`](facet::Facet) that may be
 /// `mut` or not.
 #[derive(From)]
 #[repr(C)]
@@ -114,15 +114,20 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     });
                 };
 
-                let Some(write_fn) = pointer.vtable.write_fn else {
-                    return Err(MakeMutError {
-                        unchanged: v,
-                        kind: MakeMutErrorKind::NotLockable,
-                    });
+                // we dont care if we lock it (Mutex) or write lock it (RwLock)
+                let lock_fn = match (pointer.vtable.write_fn, pointer.vtable.lock_fn) {
+                    (Some(write_fn), _) => write_fn,
+                    (_, Some(lock_fn)) => lock_fn,
+                    _ => {
+                        return Err(MakeMutError {
+                            unchanged: v,
+                            kind: MakeMutErrorKind::NotLockable,
+                        });
+                    }
                 };
                 // SAFETY: v.innermost_peek() unwraps all transparent wrappers like Arc or Rc until something that needs
-                // locking is reached which is also the same type we get the write_fn from
-                let res = unsafe { write_fn(v.data()) };
+                // locking is reached which is also the same type we get the lock_fn from
+                let res = unsafe { lock_fn(v.data()) };
                 let Ok(lock) = res else {
                     return Err(MakeMutError {
                         unchanged: v,
