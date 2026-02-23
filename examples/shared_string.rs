@@ -1,4 +1,5 @@
 use eframe::egui;
+use facet::Facet;
 use facet_egui::FacetProbe;
 use std::{
     sync::{Arc, RwLock},
@@ -12,6 +13,12 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc| Ok(Box::new(App::new()))),
     )
+}
+
+#[derive(Debug, Facet)]
+pub struct User {
+    #[facet(facet_egui::readonly)]
+    name: Arc<RwLock<String>>,
 }
 
 struct App {

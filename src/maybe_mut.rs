@@ -1,5 +1,5 @@
 use derive_more::{Deref, DerefMut, From};
-use facet::{Def, WriteLockResult};
+use facet::{Def, PtrConst, ReadLockResult, Shape, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
 /// Some reference to a type that implements [`Facet`](facet::Facet) that may be
@@ -12,11 +12,30 @@ pub enum MaybeMut<'mem, 'facet> {
 }
 
 impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
+    /// Returns a readonly/immutable version of the inner type
     pub fn as_peek(&'mem self) -> Peek<'mem, 'facet> {
         match self {
             Self::Not(peek) => *peek,
             Self::Mut(poke) => poke.as_peek(),
         }
+    }
+
+    pub fn into_peek(self) -> Peek<'mem, 'facet> {
+        match self {
+            MaybeMut::Not(n) => n,
+            MaybeMut::Mut(m) => {
+                let m: Poke<'mem, 'facet> = m;
+                let peek: Peek<'mem, 'facet> = unsafe { Peek::unchecked_new(m.data(), m.shape()) };
+                peek
+            }
+        }
+    }
+
+    /// Returns the [`Shape`] of the underlying type
+    ///
+    /// The [`Shape`] is the same for [`Mut`](Self::Mut) and [`Not`](Self::Not)
+    pub fn shape(&self) -> &'static Shape {
+        self.as_peek().shape()
     }
 }
 
@@ -41,21 +60,52 @@ pub enum MakeMutErrorKind {
     LockFailure,
 }
 
-/// contains the guard, the data ptr, and drop vtable to free the lock
+/// Depending on whether this is a read or write lock, `P` will be either
+/// [`PtrConst`] or [`PtrMut`]. This enum makes `P` dynamic
+#[derive(From)]
+pub(crate) enum LockGuardType {
+    Write(WriteLockResult),
+    Read(ReadLockResult),
+}
+
+impl LockGuardType {
+    pub fn data_const(&self) -> PtrConst {
+        match self {
+            Self::Write(w) => w.data_const(),
+            Self::Read(r) => *r.data(),
+        }
+    }
+}
+
+/// Contains the guard, the data ptr, and drop vtable to free the lock
 ///
 /// # Note
 ///
-/// The contained [`MaybeMut`] is guaranteed to be [`Mut`](MaybeMut::Mut)
+/// The contained [`MaybeMut`] is NOT guaranteed to be [`Mut`](MaybeMut::Mut)
+///
+/// For example, RwLock also needs a lock and guard for a read.
+///
+
 #[derive(Deref, DerefMut)]
 pub struct Guard<'lock_mem, 'facet> {
-    // dropping the guard handles freeing the lock
-    // if this is None, the `data` can be accessed directly and there is no
-    // lock that must be freeed
-    _guard: Option<WriteLockResult>,
+    /// Dropping the guard handles freeing the lock
+    ///
+    /// If this is None, the `data` can be accessed directly and there is no
+    /// lock that must be freeed
+    ///
+    /// SAFETY: The pointer inside the [`WriteLockResult`] MUST NOT be used
+    /// since the data is already mutable available via `data`
+    _guard: Option<LockGuardType>,
     #[deref]
     #[deref_mut]
     data: MaybeMut<'lock_mem, 'facet>,
 }
+
+// impl<'lock_mem, 'facet> Guard<'lock_mem, 'facet> {
+//     pub unsafe fn split(self) -> (MaybeMut<'lock_mem, 'facet>, Option<LockGuardType>) {
+//         todo!()
+//     }
+// }
 
 impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// Try to turn [`MaybeMut::Not`] into [`MaybeMut::Mut`]
@@ -84,7 +134,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// to free the lock
     ///
     /// [`Shape`]: facet::Shape
-    pub fn make_mut<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
+    pub fn write<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
     where
         'mem: 'lock,
     {
@@ -151,9 +201,73 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 let value = MaybeMut::Mut(poke);
                 Ok(Guard {
                     data: value,
-                    _guard: Some(lock),
+                    _guard: Some(LockGuardType::Write(lock)),
                 })
             }
         }
+    }
+
+    /// Returns a [`Guard`] with a lock that is sufficent for reading.
+    ///
+    /// In case of `RwLock` it is locked to read. If it is a `Mutex`, it must
+    /// be exclusively locked to write but we only consider it being read which
+    /// is safe
+    pub fn read<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
+    where
+        'mem: 'lock,
+    {
+        let peek = self.into_peek();
+        // unwrap smart pointers
+        let v = peek.innermost_peek();
+        // the shape of the pointer type (if it is one) but derefence smart pointers that can so without locking
+        // e.g. Arc<T>
+        let shape = v.shape();
+        let def = shape.def;
+
+        // short cirucit if it is not a pointer. in these
+        // cases we wont be able to reach something like
+        // RwLock or Mutex
+        // In this case, we just return the reference to the underlying type
+        let Def::Pointer(pointer) = def else {
+            return Ok(Guard {
+                _guard: None,
+                data: MaybeMut::Not(v),
+            });
+        };
+
+        // we dont care if we lock it (Mutex) or read lock it (RwLock)
+        let res: Result<LockGuardType, _> = if let Some(read_fn) = pointer.vtable.read_fn {
+            unsafe { read_fn(v.data()) }.map(Into::into)
+        } else if let Some(lock_fn) = pointer.vtable.lock_fn {
+            unsafe { lock_fn(v.data()) }.map(Into::into)
+        } else {
+            return Err(MakeMutError {
+                unchanged: v,
+                kind: MakeMutErrorKind::NotLockable,
+            });
+        };
+
+        let Ok(lock) = res else {
+            return Err(MakeMutError {
+                unchanged: v,
+                kind: MakeMutErrorKind::LockFailure,
+            });
+        };
+        // SAFETY: creates access via the PtrMut returned from locking
+        // the smart pointer. 'lock outlives 'mem this means
+        // the returned mutable Poke<'lock> also outlives the SmartPointer<'mem>
+        let peek: Peek<'lock, 'facet> = unsafe {
+            Peek::unchecked_new(
+                lock.data_const(),
+                shape
+                    .inner
+                    .expect("a smart pointer always has an inner shape"),
+            )
+        };
+        let value = MaybeMut::Not(peek);
+        Ok(Guard {
+            _guard: Some(lock),
+            data: value,
+        })
     }
 }
