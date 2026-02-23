@@ -93,8 +93,8 @@ pub struct Guard<'lock_mem, 'facet> {
     /// If this is None, the `data` can be accessed directly and there is no
     /// lock that must be freeed
     ///
-    /// SAFETY: The pointer inside the [`WriteLockResult`] MUST NOT be used
-    /// since the data is already mutable available via `data`
+    /// SAFETY: The pointer inside the [`LockGuardType`] MUST NOT be used
+    /// since the data is already (mutable) available via `data`
     _guard: Option<LockGuardType>,
     #[deref]
     #[deref_mut]
@@ -186,8 +186,8 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 };
 
                 // SAFETY: creates access via the PtrMut returned from locking
-                // the smart pointer. 'lock outlives 'mem this means
-                // the returned mutable Poke<'lock> also outlives the SmartPointer<'mem>
+                // the smart pointer. 'mem outlives 'lock this means
+                // the returned SmartPointer<'mem> also outlives the mutable Poke<'lock>
                 let poke: Poke<'lock, 'facet> = unsafe {
                     Poke::from_raw_parts(
                         // if the input type was Arc<RwLock<String>> this willbe
@@ -198,7 +198,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                             .expect("a smart pointer always has an inner shape"),
                     )
                 };
-                let value = MaybeMut::Mut(poke);
+                let value: MaybeMut<'lock, 'facet> = MaybeMut::Mut(poke);
                 Ok(Guard {
                     data: value,
                     _guard: Some(LockGuardType::Write(lock)),
