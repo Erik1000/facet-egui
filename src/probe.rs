@@ -68,7 +68,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                 // <https://discord.com/channels/1379550208551026748/1379550209599733837/1475545645619089590>
                 // FIXME: this is unsound probably
                 // SAFETY: This may be sound as long as m is not accessed while poke exists
-                assert!(
+                debug_assert!(
                     m.shape().computed_variance().can_shrink(),
                     "required for safety"
                 );
