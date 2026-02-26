@@ -41,13 +41,13 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}")]
-pub struct MakeMutError<'mem, 'facet> {
+pub struct MakeLockError<'mem, 'facet> {
     pub unchanged: Peek<'mem, 'facet>,
-    pub kind: MakeMutErrorKind,
+    pub kind: MakeLockErrorKind,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum MakeMutErrorKind {
+pub enum MakeLockErrorKind {
     /// The underlying is not a pointer type (see [`KnownPointer`](facet::KnownPointer))
     #[error("type is not a pointer")]
     NoPointer,
@@ -85,7 +85,6 @@ impl LockGuardType {
 ///
 /// For example, RwLock also needs a lock and guard for a read.
 ///
-
 #[derive(Deref, DerefMut)]
 pub struct Guard<'lock_mem, 'facet> {
     /// Dropping the guard handles freeing the lock
@@ -100,12 +99,6 @@ pub struct Guard<'lock_mem, 'facet> {
     #[deref_mut]
     data: MaybeMut<'lock_mem, 'facet>,
 }
-
-// impl<'lock_mem, 'facet> Guard<'lock_mem, 'facet> {
-//     pub unsafe fn split(self) -> (MaybeMut<'lock_mem, 'facet>, Option<LockGuardType>) {
-//         todo!()
-//     }
-// }
 
 impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// Try to turn [`MaybeMut::Not`] into [`MaybeMut::Mut`]
@@ -134,7 +127,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// to free the lock
     ///
     /// [`Shape`]: facet::Shape
-    pub fn write<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
+    pub fn write<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeLockError<'mem, 'facet>>
     where
         'mem: 'lock,
     {
@@ -148,6 +141,10 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             MaybeMut::Not(v) => {
                 // SAFETY: v.innermost_peek() unwraps all transparent wrappers like Arc or Rc until something that needs
                 // locking is reached which is all we care about
+                // FIXME: naively using innermost_peek is a bad idea i think.
+                // for example, in the UI if there is a NonZero<u32> this will peek
+                // up tu u32. Then, we will perhaps display an editable u32 which
+                // can be set to zero. Now what? We broke it boys
                 let v = v.innermost_peek();
                 // the shape of the pointer type (if it is one) but derefence smart pointers that can so without locking
                 // e.g. Arc<T>
@@ -158,9 +155,9 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 // cases we wont be able to reach something like
                 // RwLock or Mutex
                 let Def::Pointer(pointer) = def else {
-                    return Err(MakeMutError {
+                    return Err(MakeLockError {
                         unchanged: v,
-                        kind: MakeMutErrorKind::NoPointer,
+                        kind: MakeLockErrorKind::NoPointer,
                     });
                 };
 
@@ -169,9 +166,9 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     (Some(write_fn), _) => write_fn,
                     (_, Some(lock_fn)) => lock_fn,
                     _ => {
-                        return Err(MakeMutError {
+                        return Err(MakeLockError {
                             unchanged: v,
-                            kind: MakeMutErrorKind::NotLockable,
+                            kind: MakeLockErrorKind::NotLockable,
                         });
                     }
                 };
@@ -179,9 +176,9 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 // locking is reached which is also the same type we get the lock_fn from
                 let res = unsafe { lock_fn(v.data()) };
                 let Ok(lock) = res else {
-                    return Err(MakeMutError {
+                    return Err(MakeLockError {
                         unchanged: v,
-                        kind: MakeMutErrorKind::LockFailure,
+                        kind: MakeLockErrorKind::LockFailure,
                     });
                 };
 
@@ -212,7 +209,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     /// In case of `RwLock` it is locked to read. If it is a `Mutex`, it must
     /// be exclusively locked to write but we only consider it being read which
     /// is safe
-    pub fn read<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeMutError<'mem, 'facet>>
+    pub fn read<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeLockError<'mem, 'facet>>
     where
         'mem: 'lock,
     {
@@ -241,16 +238,16 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
         } else if let Some(lock_fn) = pointer.vtable.lock_fn {
             unsafe { lock_fn(v.data()) }.map(Into::into)
         } else {
-            return Err(MakeMutError {
+            return Err(MakeLockError {
                 unchanged: v,
-                kind: MakeMutErrorKind::NotLockable,
+                kind: MakeLockErrorKind::NotLockable,
             });
         };
 
         let Ok(lock) = res else {
-            return Err(MakeMutError {
+            return Err(MakeLockError {
                 unchanged: v,
-                kind: MakeMutErrorKind::LockFailure,
+                kind: MakeLockErrorKind::LockFailure,
             });
         };
         // SAFETY: creates access via the PtrMut returned from locking
