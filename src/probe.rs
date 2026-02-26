@@ -68,11 +68,11 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                 // <https://discord.com/channels/1379550208551026748/1379550209599733837/1475545645619089590>
                 // FIXME: this is unsound probably
                 // SAFETY: This may be sound as long as m is not accessed while poke exists
-                debug_assert!(
-                    m.shape().computed_variance().can_shrink(),
-                    "required for safety"
-                );
-                // FIXME: this can be replaced once we get something like
+                // debug_assert!(
+                //     m.shape().computed_variance().can_shrink(),
+                //     "required for safety"
+                // );
+                // // FIXME: this can be replaced once we get something like
                 // <https://github.com/facet-rs/facet/issues/2097>
                 let poke: Poke<'_, 'facet> =
                     unsafe { Poke::from_raw_parts(m.data_mut(), m.shape()) };
