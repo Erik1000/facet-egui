@@ -27,3 +27,7 @@ thiserror = { version = "2", default-features = false }
 [dev-dependencies]
 eframe = { version = "0.33" }
 color-eyre = { version = "0.6" }
+
+[patch.crates-io]
+facet = { git = "https://github.com/facet-rs/facet.git" }
+facet-reflect = { git = "https://github.com/facet-rs/facet.git" }

@@ -25,6 +25,18 @@ pub enum MaybeMutT<'mem, T> {
 }
 
 impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
+    pub fn new_peek(value: Peek<'mem, 'facet>) -> Self {
+        Self {
+            inner: MaybeMut::Not(value),
+        }
+    }
+
+    pub fn new_poke(value: Poke<'mem, 'facet>) -> Self {
+        Self {
+            inner: MaybeMut::Mut(value),
+        }
+    }
+
     pub fn new<T>(value: impl Into<MaybeMutT<'mem, T>>) -> Self
     where
         T: Facet<'facet> + 'mem,
@@ -64,22 +76,11 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         let maybe_mut = guard.deref_mut();
         match maybe_mut {
             MaybeMut::Mut(m) => {
-                // FIXME: need something like PokeMutCow
-                // <https://discord.com/channels/1379550208551026748/1379550209599733837/1475545645619089590>
-                // FIXME: this is unsound probably
-                // SAFETY: This may be sound as long as m is not accessed while poke exists
-                // debug_assert!(
-                //     m.shape().computed_variance().can_shrink(),
-                //     "required for safety"
-                // );
-                // // FIXME: this can be replaced once we get something like
-                // <https://github.com/facet-rs/facet/issues/2097>
-                let poke: Poke<'_, 'facet> =
-                    unsafe { Poke::from_raw_parts(m.data_mut(), m.shape()) };
-                //Self::show_poke(poke, ui);
-                // for now just show a peek
-                Self::show_peek(poke.as_peek(), ui);
-                // SAFETY: now access to `m` is sound again I think
+                let Some(poke) = m.try_reborrow() else {
+                    ui.colored_label(Color32::RED, "Cannot reborrow");
+                    return;
+                };
+                Self::show_poke(poke, ui);
             }
             MaybeMut::Not(n) => {
                 // works because Peek implements Copy
@@ -295,8 +296,7 @@ impl FacetProbe<'_, '_> {
 
     fn show_peek_struct(peek: PeekStruct<'_, '_>, ui: &mut Ui) {
         ui.vertical(|ui| {
-            for (field, value) in peek.fields() {
-                ui.label(field.effective_name());
+            for (_field, value) in peek.fields() {
                 Self::show_peek(value, ui);
                 ui.spacing();
             }
@@ -305,8 +305,7 @@ impl FacetProbe<'_, '_> {
 
     fn show_peek_tuple(peek: PeekTuple<'_, '_>, ui: &mut Ui) {
         ui.vertical(|ui| {
-            for (field, value) in peek.fields() {
-                ui.label(field.effective_name());
+            for (_field, value) in peek.fields() {
                 Self::show_peek(value, ui);
                 ui.spacing();
             }
