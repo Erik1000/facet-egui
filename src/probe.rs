@@ -1,7 +1,7 @@
 use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut, From};
-use egui::{Checkbox, Color32, TextEdit, Ui};
+use egui::{Checkbox, Color32, ScrollArea, TextEdit, Ui};
 use facet::{Facet, ScalarType};
 use facet_reflect::{
     HasFields, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekResult, PeekSet,
@@ -126,17 +126,28 @@ impl FacetProbe<'_, '_> {
         }
     }
 
-    fn poke_struct(mut poke: PokeStruct<'_, '_>, ui: &mut Ui) {
+    fn poke_struct(poke: PokeStruct<'_, '_>, ui: &mut Ui) {
+        let poke = poke.into_inner();
+        let name = poke.shape().effective_name();
+        let mut poke = poke
+            .into_struct()
+            .expect("valid it was a poke struct before");
         // FIXME: get struct name somehow
-        ui.label("Struct");
-        for field_idx in 0..poke.field_count() {
-            let field = poke.field(field_idx);
-            if let Ok(field) = field {
-                Self::show_poke(field, ui);
-            } else {
-                ui.colored_label(Color32::RED, "field error");
+        ui.label(name);
+        ScrollArea::both().show(ui, |ui| {
+            for field_idx in 0..poke.field_count() {
+                let field_name = poke.ty().fields[field_idx].effective_name();
+                let field = poke.field(field_idx);
+                if let Ok(field) = field {
+                    ui.horizontal(|ui| {
+                        ui.label(field_name);
+                        Self::show_poke(field, ui);
+                    });
+                } else {
+                    ui.colored_label(Color32::RED, "field error");
+                }
             }
-        }
+        });
     }
 }
 
