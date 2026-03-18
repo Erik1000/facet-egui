@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Formatter, ops::DerefMut};
+use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut, From};
 use egui::{Checkbox, Color32, TextEdit, Ui};
@@ -126,18 +126,16 @@ impl FacetProbe<'_, '_> {
         }
     }
 
-    fn poke_struct(poke: PokeStruct<'_, '_>, ui: &mut Ui) {
+    fn poke_struct(mut poke: PokeStruct<'_, '_>, ui: &mut Ui) {
+        // FIXME: get struct name somehow
         ui.label("Struct");
-        let fields: Vec<_> = poke
-            .as_peek_struct()
-            .fields()
-            //.map(|(field, _peek)| field)
-            .collect();
-        for (field, peek) in fields {
-            ui.label(field.effective_name());
-            // FIXME: this is unsound and i just wanted to try it out lol
-            // let poke = unsafe { Poke::from_raw_parts(peek.data().into_mut(), peek.shape()) };
-            // Self::show_poke(poke, ui);
+        for field_idx in 0..poke.field_count() {
+            let field = poke.field(field_idx);
+            if let Ok(field) = field {
+                Self::show_poke(field, ui);
+            } else {
+                ui.colored_label(Color32::RED, "field error");
+            }
         }
     }
 }

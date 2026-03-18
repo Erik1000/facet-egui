@@ -10,8 +10,8 @@ egui = ["dep:egui"]
 
 [dependencies]
 egui = { version = "0.33.3", default-features = false, optional = true }
-facet = { version = "0.43.2", default-features = false, features = ["alloc"] }
-facet-reflect = { version = "0.43.2", default-features = false, features = [
+facet = { version = "0.44", default-features = false, features = ["alloc"] }
+facet-reflect = { version = "0.44", default-features = false, features = [
     "alloc",
 ] }
 
@@ -28,6 +28,6 @@ thiserror = { version = "2", default-features = false }
 eframe = { version = "0.33" }
 color-eyre = { version = "0.6" }
 
-[patch.crates-io]
-facet = { git = "https://github.com/facet-rs/facet.git" }
-facet-reflect = { git = "https://github.com/facet-rs/facet.git" }
+# [patch.crates-io]
+# facet = { git = "https://github.com/facet-rs/facet.git" }
+# facet-reflect = { git = "https://github.com/facet-rs/facet.git" }
