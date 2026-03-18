@@ -15,6 +15,9 @@ use crate::{EguiAttr, MaybeMut, maybe_mut::Guard};
 #[must_use = "use [`FacetProbe::show`] to display the probe in the [`Ui`]"]
 #[derive(Deref, DerefMut)]
 pub struct FacetProbe<'mem, 'facet> {
+    read_only: bool,
+    #[deref]
+    #[deref_mut]
     inner: MaybeMut<'mem, 'facet>,
 }
 
@@ -25,14 +28,22 @@ pub enum MaybeMutT<'mem, T> {
 }
 
 impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
+    pub fn readonly(self) -> Self {
+        Self {
+            read_only: true,
+            ..self
+        }
+    }
     pub fn new_peek(value: Peek<'mem, 'facet>) -> Self {
         Self {
+            read_only: true,
             inner: MaybeMut::Not(value),
         }
     }
 
     pub fn new_poke(value: Poke<'mem, 'facet>) -> Self {
         Self {
+            read_only: false,
             inner: MaybeMut::Mut(value),
         }
     }
@@ -46,7 +57,10 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             MaybeMutT::Mut(v) => Poke::new(v).into(),
             MaybeMutT::Not(v) => Peek::new(v).into(),
         };
-        Self { inner }
+        Self {
+            read_only: false,
+            inner,
+        }
     }
 
     pub fn show<'lock>(self, ui: &mut Ui)
@@ -58,7 +72,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             .attributes
             .iter()
             .filter_map(|x| x.get_as::<crate::EguiAttr>());
-        let readonly = attributes.any(|x| matches!(x, EguiAttr::Readonly));
+        let readonly = attributes.any(|x| matches!(x, EguiAttr::Readonly)) || self.read_only;
         let mut guard: Guard<'lock, 'facet> = if readonly {
             let Ok(read) = self.inner.read() else {
                 ui.colored_label(Color32::RED, "Cannot display readonly value");
@@ -134,20 +148,22 @@ impl FacetProbe<'_, '_> {
             .expect("valid it was a poke struct before");
         // FIXME: get struct name somehow
         ui.label(name);
-        ScrollArea::both().show(ui, |ui| {
-            for field_idx in 0..poke.field_count() {
-                let field_name = poke.ty().fields[field_idx].effective_name();
-                let field = poke.field(field_idx);
-                if let Ok(field) = field {
-                    ui.horizontal(|ui| {
-                        ui.label(field_name);
-                        Self::show_poke(field, ui);
-                    });
-                } else {
-                    ui.colored_label(Color32::RED, "field error");
+        ScrollArea::both()
+            .id_salt(ui.next_auto_id())
+            .show(ui, |ui| {
+                for field_idx in 0..poke.field_count() {
+                    let field_name = poke.ty().fields[field_idx].effective_name();
+                    let field = poke.field(field_idx);
+                    if let Ok(field) = field {
+                        ui.horizontal(|ui| {
+                            ui.label(field_name);
+                            Self::show_poke(field, ui);
+                        });
+                    } else {
+                        ui.colored_label(Color32::RED, "field error");
+                    }
                 }
-            }
-        });
+            });
     }
 }
 
