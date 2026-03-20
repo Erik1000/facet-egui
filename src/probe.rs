@@ -16,6 +16,13 @@ use crate::{EguiAttr, MaybeMut, maybe_mut::Guard};
 #[derive(Deref, DerefMut)]
 pub struct FacetProbe<'mem, 'facet> {
     read_only: bool,
+    /// SAFETY: if used, there is a high chance what you do is unsound.
+    ///
+    /// If you use this, you will have to manually ensure your variances are
+    /// okay for use with reborrowing. Normally, this is determined by facet but
+    /// there may be cases where a type does not implement Facet or has opaque
+    /// parts that would (if used with facet) be ok.
+    force_reborrow: bool,
     #[deref]
     #[deref_mut]
     inner: MaybeMut<'mem, 'facet>,
@@ -34,9 +41,24 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             ..self
         }
     }
+
+    /// SAFETY: if used, there is a high chance what you do is unsound.
+    ///
+    /// If you use this, you will have to manually ensure your variances are
+    /// okay for use with reborrowing. Normally, this is determined by facet but
+    /// there may be cases where a type does not implement Facet or has opaque
+    /// parts that would (if used with facet) be ok.
+    pub unsafe fn force_reborrow(self) -> Self {
+        Self {
+            force_reborrow: true,
+            ..self
+        }
+    }
+
     pub fn new_peek(value: Peek<'mem, 'facet>) -> Self {
         Self {
             read_only: true,
+            force_reborrow: false,
             inner: MaybeMut::Not(value),
         }
     }
@@ -44,6 +66,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn new_poke(value: Poke<'mem, 'facet>) -> Self {
         Self {
             read_only: false,
+            force_reborrow: false,
             inner: MaybeMut::Mut(value),
         }
     }
@@ -59,6 +82,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         };
         Self {
             read_only: false,
+            force_reborrow: false,
             inner,
         }
     }
@@ -90,9 +114,21 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         let maybe_mut = guard.deref_mut();
         match maybe_mut {
             MaybeMut::Mut(m) => {
-                let Some(poke) = m.try_reborrow() else {
-                    ui.colored_label(Color32::RED, "Cannot reborrow");
-                    return;
+                // let Some(poke) = m.try_reborrow() else if self.force_reborrow {
+                // }else {
+                //     ui.colored_label(Color32::RED, "Cannot reborrow");
+                //     return;
+                // };
+                let poke = match m.try_reborrow() {
+                    Some(poke) => poke,
+                    None if self.force_reborrow => {
+                        // SAFETY: this is unsound, see Self.force_reborrow for details
+                        unsafe { Poke::from_raw_parts(m.data_mut(), m.shape()) }
+                    }
+                    None => {
+                        ui.colored_label(Color32::RED, "Cannot reborrow");
+                        return;
+                    }
                 };
                 Self::show_poke(poke, ui);
             }
