@@ -27,6 +27,7 @@ derive_more = { version = "2.1", default-features = false, features = [
 ] }
 
 thiserror = { version = "2", default-features = false }
+log = "0.4"
 
 [dev-dependencies]
 eframe = { version = "0.33" }

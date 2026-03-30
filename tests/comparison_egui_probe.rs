@@ -38,7 +38,7 @@ impl eframe::App for App {
 
                     ui.end_row();
                     Probe::new(&mut self.value).show(ui);
-                    FacetProbe::new(&self.value).show(ui);
+                    FacetProbe::new(&mut self.value).show(ui);
                 });
         });
     }

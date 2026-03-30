@@ -1,18 +1,98 @@
 use std::hash::Hash;
 
+// -- ProbeHeader: collapsible section state, ported from egui-probe --
+
 #[derive(Clone, Copy)]
-pub struct ProbeLayoutState {
+struct ProbeHeaderState {
+    has_inner: bool,
+    open: bool,
+    body_height: f32,
+}
+
+pub(crate) struct ProbeHeader {
+    id: egui::Id,
+    state: ProbeHeaderState,
+    dirty: bool,
+    pub openness: f32,
+}
+
+impl ProbeHeader {
+    pub fn load(cx: &egui::Context, id: egui::Id) -> ProbeHeader {
+        let state = cx.data_mut(|d| d.get_temp(id)).unwrap_or(ProbeHeaderState {
+            has_inner: false,
+            open: false,
+            body_height: 0.0,
+        });
+        let openness = cx.animate_bool(id, state.open);
+        ProbeHeader {
+            id,
+            state,
+            dirty: false,
+            openness,
+        }
+    }
+
+    pub fn store(self, cx: &egui::Context) {
+        if self.dirty {
+            cx.data_mut(|d| d.insert_temp(self.id, self.state));
+            cx.request_repaint();
+        }
+    }
+
+    pub fn has_inner(&self) -> bool {
+        self.state.has_inner
+    }
+
+    pub fn set_has_inner(&mut self, has_inner: bool) {
+        if self.state.has_inner != has_inner {
+            self.state.has_inner = has_inner;
+            self.dirty = true;
+        }
+    }
+
+    pub fn toggle(&mut self) {
+        self.state.open = !self.state.open;
+        self.dirty = true;
+    }
+
+    pub fn set_body_height(&mut self, height: f32) {
+        if (self.state.body_height - height).abs() > 0.001 {
+            self.state.body_height = height;
+            self.dirty = true;
+        }
+    }
+
+    pub fn body_shift(&self) -> f32 {
+        (1.0 - self.openness) * self.state.body_height
+    }
+
+    pub fn collapse_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let desired_size = ui.spacing().icon_width_inner;
+        let response =
+            ui.allocate_response(egui::vec2(desired_size, desired_size), egui::Sense::click());
+        if response.clicked() {
+            self.toggle();
+        }
+        egui::collapsing_header::paint_default_icon(ui, self.openness, &response);
+        response
+    }
+}
+
+// -- ProbeLayout: two-column label/value layout, ported from egui-probe --
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProbeLayoutState {
     labels_width: f32,
 }
 
-pub struct ProbeLayout {
+pub(crate) struct ProbeLayout {
     id: egui::Id,
     state: ProbeLayoutState,
     min_labels_width: f32,
 }
 
 impl ProbeLayout {
-    fn load(cx: &egui::Context, id: egui::Id) -> ProbeLayout {
+    pub fn load(cx: &egui::Context, id: egui::Id) -> ProbeLayout {
         let state = cx.data_mut(|d| *d.get_temp_mut_or(id, ProbeLayoutState { labels_width: 0.0 }));
         ProbeLayout {
             id,
@@ -21,7 +101,7 @@ impl ProbeLayout {
         }
     }
 
-    fn store(mut self, cx: &egui::Context) {
+    pub fn store(mut self, cx: &egui::Context) {
         if self.state.labels_width != self.min_labels_width {
             self.state.labels_width = self.min_labels_width;
             cx.data_mut(|d| d.insert_temp(self.id, self.state));

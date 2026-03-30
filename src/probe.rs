@@ -1,25 +1,23 @@
-use std::{borrow::Cow, hash::Hash, ops::DerefMut, slice::ChunkBy};
+use std::{borrow::Cow, ops::DerefMut};
 
-use derive_more::{Deref, DerefMut, From};
-use egui::{
-    Align, Checkbox, Color32, Id, Layout, Pos2, Rect, Response, ScrollArea, TextEdit, Ui,
-    UiBuilder, WidgetText,
-};
-use facet::{Facet, ScalarType};
+use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
+use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
+use facet::{Facet, ScalarType, Type, UserType};
 use facet_reflect::{
-    HasFields, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekResult, PeekSet,
-    PeekStruct, PeekTuple, Poke, PokeEnum, PokeStruct, ReflectError,
+    HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekStruct,
+    PeekTuple, Poke, PokeEnum, PokeStruct,
 };
 
 use crate::{
     EguiAttr, MaybeMut,
+    layout::{ProbeHeader, ProbeLayout},
     maybe_mut::{Guard, MakeLockErrorKind},
 };
 
 /// The container that stores a [`MaybeMut`] of the type `T` that should be shown
 /// in the [`Ui`](egui::Ui)
 #[must_use = "use [`FacetProbe::show`] to display the probe in the [`Ui`]"]
-#[derive(Deref, DerefMut)]
+#[derive(Deref, DeriveDerefMut)]
 pub struct FacetProbe<'mem, 'facet> {
     header: Option<WidgetText>,
     read_only: bool,
@@ -139,287 +137,1008 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                 }
             }
         };
-        // lifetime of borrow lives at most as long as 'lock
+
         let maybe_mut = guard.deref_mut();
-        let mut r = ui.allocate_ui(ui.available_size(), |ui| {
-            let child_ui = &mut ui.new_child(
-                UiBuilder::new()
-                    .max_rect(ui.max_rect())
-                    .layout(Layout::top_down(Align::Min)),
-            );
-            let id = child_ui.next_auto_id();
-            match maybe_mut {
-                MaybeMut::Mut(m) => {
-                    let poke = match m.try_reborrow() {
-                        Some(poke) => poke,
-                        None if self.force_reborrow => {
-                            // SAFETY: this is unsound, see Self.force_reborrow for details
-                            unsafe { Poke::from_raw_parts(m.data_mut(), m.shape()) }
-                        }
-                        None => {
-                            ui.colored_label(Color32::RED, "Cannot reborrow");
-                            return;
-                        }
-                    };
-                    Self::show_poke(poke, child_ui);
+        let mut r = ui
+            .allocate_ui(ui.available_size(), |ui| {
+                let child_ui = &mut ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(ui.max_rect())
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                let id = child_ui.next_auto_id();
+
+                let mut layout = ProbeLayout::load(child_ui.ctx(), id);
+
+                if let Some(label) = self.header {
+                    // Show with a top-level header (like Probe::new(x).with_header("name"))
+                    let mut header = show_header(
+                        label,
+                        maybe_mut,
+                        &mut layout,
+                        0,
+                        child_ui,
+                        id,
+                        &mut changed,
+                        self.force_reborrow,
+                    );
+
+                    if header.openness > 0.0 {
+                        show_body(
+                            maybe_mut,
+                            &mut header,
+                            &mut layout,
+                            0,
+                            child_ui,
+                            id,
+                            &mut changed,
+                            self.force_reborrow,
+                        );
+                    } else {
+                        header.set_has_inner(has_inner(maybe_mut));
+                    }
+
+                    header.store(child_ui.ctx());
+                } else {
+                    // Show directly without a top-level header (table of fields)
+                    show_body_direct(
+                        maybe_mut,
+                        &mut layout,
+                        0,
+                        child_ui,
+                        id,
+                        &mut changed,
+                        self.force_reborrow,
+                    );
                 }
-                MaybeMut::Not(n) => {
-                    // works because Peek implements Copy
-                    Self::show_peek(*n, child_ui, id);
-                }
-            };
-        });
+
+                layout.store(child_ui.ctx());
+
+                let final_rect = child_ui.min_rect();
+                ui.advance_cursor_after_rect(final_rect);
+            })
+            .response;
+
         drop(guard);
+
         if changed {
+            r.mark_changed();
             ui.ctx().request_repaint();
         }
-        ui.response()
-    }
-}
 
-impl FacetProbe<'_, '_> {
-    fn show_poke(mut poke: Poke<'_, '_>, ui: &mut Ui) {
-        if !poke.is_scalar() {
-            // continue unwrapping until we find a scalar that we can display
-            if poke.is_enum() {
-                Self::poke_enum(poke.into_enum().unwrap(), ui);
-            } else if poke.is_struct() {
-                Self::poke_struct(poke.into_struct().unwrap(), ui);
-            } else {
-                ui.colored_label(Color32::YELLOW, "Unsupported poke type");
-            }
-        } else {
-            // TODO: try out all known scalar types? seems stupid
-            if let Ok(s) = poke.get_mut::<String>() {
-                ui.text_edit_singleline(s);
-            }
-        }
-    }
-
-    fn poke_enum(poke: PokeEnum<'_, '_>, ui: &mut Ui) {
-        for variant in poke.variants() {
-            let checked =
-                poke.active_variant().unwrap().effective_name() == variant.effective_name();
-            if ui
-                .selectable_label(checked, variant.effective_name())
-                .clicked()
-                && !checked
-            {
-                // TODO: handle setting enum variant
-                // this could get complicating if the enum has variants with fields
-                // perhaps we can use Partial and some custom constructor?
-            }
-        }
-    }
-
-    fn poke_struct(poke: PokeStruct<'_, '_>, ui: &mut Ui) {
-        let poke = poke.into_inner();
-        let name = poke.shape().effective_name();
-        let mut poke = poke
-            .into_struct()
-            .expect("valid it was a poke struct before");
-        // FIXME: get struct name somehow
-        ui.label(name);
-        ScrollArea::both()
-            .id_salt(ui.next_auto_id())
-            .show(ui, |ui| {
-                for field_idx in 0..poke.field_count() {
-                    let field_name = poke.ty().fields[field_idx].effective_name();
-                    let field = poke.field(field_idx);
-                    if let Ok(field) = field {
-                        ui.horizontal(|ui| {
-                            ui.label(field_name);
-                            Self::show_poke(field, ui);
-                        });
-                    } else {
-                        ui.colored_label(Color32::RED, "field error");
-                    }
-                }
-            });
-    }
-}
-
-/// [`Peek`] / readonly implementation
-impl FacetProbe<'_, '_> {
-    fn show_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        if let Some(scalar_type) = peek.scalar_type() {
-            Self::show_peek_scalar(peek, scalar_type, ui, id).expect("casting works everywhere")
-            // handle scalar type
-        } else if let Ok(enu) = peek.into_enum() {
-            Self::show_peek_enum(enu, ui, id)
-        } else if let Ok(list) = peek.into_list_like() {
-            Self::show_peek_list(list, ui, id)
-        } else if let Ok(map) = peek.into_map() {
-            Self::show_peek_map(map, ui, id)
-        } else if let Ok(option) = peek.into_option() {
-            Self::show_peek_option(option, ui, id)
-        } else if let Ok(pointer) = peek.into_pointer() {
-            Self::show_peek_pointer(pointer, ui, id)
-        } else if let Ok(result) = peek.into_result() {
-            Self::show_peek_result(result, ui, id)
-        } else if let Ok(set) = peek.into_set() {
-            Self::show_peek_set(set, ui, id)
-        } else if let Ok(struc) = peek.into_struct() {
-            Self::show_peek_struct(struc, ui, id)
-        } else if let Ok(tuple) = peek.into_tuple() {
-            Self::show_peek_tuple(tuple, ui, id)
-        } else {
-            ui.colored_label(Color32::RED, "Unsupported Peek type")
-        }
-    }
-
-    fn show_peek_scalar(
-        peek: Peek<'_, '_>,
-        scalar_type: ScalarType,
-        ui: &mut Ui,
-        _id: Id,
-    ) -> Result<Response, ReflectError> {
-        Ok(match scalar_type {
-            ScalarType::Bool => {
-                // this is only marked mutable to satisfy the function signature.
-                // the value is not actually updated since it is copied before
-                // ui interaction is disabled because it is readonly
-                let mut value = *peek.get::<bool>()?;
-                ui.add_enabled(false, Checkbox::without_text(&mut value))
-            }
-            ScalarType::Char => {
-                // TODO: this allocates a String with one char each render which is inefficent
-                let c = peek.get::<char>()?.to_string();
-                ui.add_enabled(false, TextEdit::singleline(&mut c.as_str()))
-            }
-            ScalarType::Str => {
-                let mut value = peek.get::<str>()?;
-                // TODO: how to decide if multiline or single line?
-                ui.add_enabled(false, TextEdit::multiline(&mut value))
-            }
-            ScalarType::CowStr => {
-                let mut value = peek.get::<Cow<'_, str>>()?.clone();
-                ui.add_enabled(false, TextEdit::multiline(&mut value))
-            }
-            ScalarType::String => {
-                let mut value: Cow<'_, str> = Cow::Borrowed(peek.get::<String>()?.as_str());
-                ui.add_enabled(false, TextEdit::multiline(&mut value))
-            }
-            // fallback to display implementation if the type has one
-            _ if peek.shape().is_display() => ui.label(format!("{}", peek)),
-            // or fallback to the debug implementation if the type has one
-            _ if peek.shape().is_debug() => ui.label(format!("{:?}", peek)),
-            _ => ui.label(format!("Cannot display scalar type: {peek}")),
-        })
-    }
-
-    fn show_peek_enum(peek: PeekEnum<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        let mut r = ui.response();
-        ui.horizontal(|ui| {
-            if let Ok(variant) = peek.active_variant() {
-                if ui
-                    .selectable_label(false, variant.effective_name())
-                    .clicked()
-                {
-                    // TODO: show field selection
-                }
-                ui.end_row();
-                r = ui
-                    .vertical(|ui| {
-                        for (field, value) in peek.fields() {
-                            ui.weak(field.effective_name());
-                            FacetProbe::new_peek(value).show(ui);
-                            ui.spacing();
-                        }
-                    })
-                    .response;
-            }
-        });
         r
     }
+}
 
-    fn show_peek_list(peek: PeekListLike<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        ui.horizontal(|ui| {
-            ui.weak(format!("[{}]", peek.len()));
+// ---------------------------------------------------------------------------
+// Core layout functions (egui-probe style)
+// ---------------------------------------------------------------------------
+
+/// Returns true if the given `MaybeMut` has inner fields/items to display
+/// (i.e. it should get a collapse arrow).
+fn has_inner(value: &MaybeMut<'_, '_>) -> bool {
+    let peek = value.as_peek();
+    // Structs with fields, enums with variant fields, lists, maps, options
+    // with inner, tuples, sets, pointers to inner — all have inner content.
+    if let Ok(s) = peek.into_struct() {
+        return s.field_count() > 0;
+    }
+    if let Ok(e) = peek.into_enum()
+        && let Ok(v) = e.active_variant()
+    {
+        return !v.data.fields.is_empty();
+    }
+    if let Ok(l) = peek.into_list_like() {
+        return !l.is_empty();
+    }
+    if let Ok(m) = peek.into_map() {
+        return !m.is_empty();
+    }
+    if let Ok(opt) = peek.into_option()
+        && let Some(inner) = opt.value()
+    {
+        return has_inner(&MaybeMut::Not(inner));
+    }
+    if let Ok(t) = peek.into_tuple() {
+        return !t.is_empty();
+    }
+    if let Ok(p) = peek.into_pointer()
+        && let Some(inner) = p.borrow_inner()
+    {
+        return has_inner(&MaybeMut::Not(inner));
+    }
+    false
+}
+
+/// Show a single row: label on the left, inline value widget on the right.
+/// Returns the ProbeHeader for the row (which tracks collapse state).
+#[expect(clippy::too_many_arguments)]
+fn show_header(
+    label: impl Into<WidgetText>,
+    value: &mut MaybeMut<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> ProbeHeader {
+    let id = ui.make_persistent_id(id_salt);
+    let mut header = ProbeHeader::load(ui.ctx(), id);
+
+    ui.horizontal(|ui| {
+        let label_response = layout.inner_label_ui(indent, id.with("label"), ui, |ui| {
+            if header.has_inner() {
+                header.collapse_button(ui);
+            }
+            ui.label(label)
         });
-        ui.vertical(|ui| {
-            for (idx, item) in peek.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("[{idx}]"));
-                    ui.spacing();
-                    Self::show_peek(item, ui, id.with(idx));
-                });
+
+        layout.inner_value_ui(id.with("value"), ui, |ui| {
+            *changed |= show_inline_value(value, ui, id, force_reborrow)
+                .labelled_by(label_response.id)
+                .changed();
+        });
+    });
+
+    header
+}
+
+/// Show the collapsible body (the inner fields/items) below a header row.
+#[expect(clippy::too_many_arguments)]
+fn show_body(
+    value: &mut MaybeMut<'_, '_>,
+    header: &mut ProbeHeader,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    changed: &mut bool,
+    force_reborrow: bool,
+) {
+    let cursor = ui.cursor();
+    let table_rect = egui::Rect::from_min_max(
+        egui::pos2(cursor.min.x, cursor.min.y - header.body_shift()),
+        ui.max_rect().max,
+    );
+
+    let mut table_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(table_rect)
+            .layout(Layout::top_down(Align::Min))
+            .id_salt(id_salt),
+    );
+    table_ui.set_clip_rect(
+        ui.clip_rect()
+            .intersect(egui::Rect::everything_below(ui.min_rect().max.y)),
+    );
+
+    let got_inner = show_inner_rows(
+        value,
+        layout,
+        indent + 1,
+        &mut table_ui,
+        changed,
+        force_reborrow,
+    );
+    header.set_has_inner(got_inner);
+
+    let final_table_rect = table_ui.min_rect();
+    ui.advance_cursor_after_rect(final_table_rect);
+    let table_height = ui.cursor().min.y - table_rect.min.y;
+    header.set_body_height(table_height);
+}
+
+/// Show the body directly (no collapse header wrapper). Used when there is no
+/// top-level header.
+fn show_body_direct(
+    value: &mut MaybeMut<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + Copy,
+    changed: &mut bool,
+    force_reborrow: bool,
+) {
+    let cursor = ui.cursor();
+    let table_rect =
+        egui::Rect::from_min_max(egui::pos2(cursor.min.x, cursor.min.y), ui.max_rect().max);
+
+    let mut table_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(table_rect)
+            .layout(Layout::top_down(Align::Min))
+            .id_salt(id_salt),
+    );
+    table_ui.set_clip_rect(
+        ui.clip_rect()
+            .intersect(egui::Rect::everything_below(ui.min_rect().max.y)),
+    );
+
+    show_inner_rows(
+        value,
+        layout,
+        indent + 1,
+        &mut table_ui,
+        changed,
+        force_reborrow,
+    );
+
+    let final_table_rect = table_ui.min_rect();
+    ui.advance_cursor_after_rect(final_table_rect);
+}
+
+/// Iterate over the "inner" rows of a value and render each as a header+body pair.
+/// Returns `true` if any inner rows were emitted.
+fn show_inner_rows(
+    value: &mut MaybeMut<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    // We dispatch on type shape and enumerate children.
+    // Each child becomes a (label, value) header row that can itself be collapsed.
+
+    match value {
+        MaybeMut::Mut(poke) => {
+            show_inner_rows_poke(poke, layout, indent, ui, changed, force_reborrow)
+        }
+        MaybeMut::Not(peek) => show_inner_rows_peek(*peek, layout, indent, ui, changed),
+    }
+}
+
+fn show_inner_rows_poke(
+    poke: &mut Poke<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    // For enums, we can use into_enum directly without reborrowing,
+    // since PokeEnum.field() takes &mut self.
+    if poke.is_enum() {
+        let enu_poke = match poke.try_reborrow() {
+            Some(rb) => rb,
+            None if force_reborrow => unsafe {
+                Poke::from_raw_parts(poke.data_mut(), poke.shape())
+            },
+            None => {
+                return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
             }
-        })
-        .response
+        };
+        if let Ok(enu) = enu_poke.into_enum() {
+            return show_inner_rows_poke_enum(enu, layout, indent, ui, changed, force_reborrow);
+        }
+        return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
     }
 
-    fn show_peek_map(peek: PeekMap<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        ui.weak(format!("[{}]", peek.len()));
-        ui.vertical(|ui| {
-            for (idx, (key, value)) in peek.iter().enumerate() {
-                Self::show_peek(key, ui, id.with((idx, "key")));
-                ui.spacing();
-                Self::show_peek(value, ui, id.with((idx, "value")));
+    // For structs, reborrow to get mutable field access
+    if poke.is_struct() {
+        let reborrow = match poke.try_reborrow() {
+            Some(rb) => rb,
+            None if force_reborrow => unsafe {
+                Poke::from_raw_parts(poke.data_mut(), poke.shape())
+            },
+            None => {
+                return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
             }
-        })
-        .response
-    }
-
-    fn show_peek_option(peek: PeekOption<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        if let Some(value) = peek.value() {
-            Self::show_peek(value, ui, id.with("some"))
-        } else {
-            ui.label("None")
+        };
+        if let Ok(struc) = reborrow.into_struct() {
+            return show_inner_rows_poke_struct(struc, layout, indent, ui, changed, force_reborrow);
         }
     }
 
-    fn show_peek_pointer(peek: PeekPointer<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        if let Some(borrow) = peek.borrow_inner() {
-            Self::show_peek(borrow, ui, id.with("ptr"))
-        } else {
-            ui.label(format!("Pointer not borrowable: {:?}", peek.def().known))
+    // For list, map, tuple, option, pointer — fall through to peek
+    show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed)
+}
+
+fn show_inner_rows_poke_struct(
+    mut struc: PokeStruct<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    let count = struc.field_count();
+    if count == 0 {
+        return false;
+    }
+    for idx in 0..count {
+        let field_name = struc.ty().fields[idx].effective_name().to_owned();
+        if let Ok(field_poke) = struc.field(idx) {
+            let mut child = MaybeMut::Mut(field_poke);
+            let mut header = show_header(
+                &field_name,
+                &mut child,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                force_reborrow,
+            );
+            if header.openness > 0.0 {
+                show_body(
+                    &mut child,
+                    &mut header,
+                    layout,
+                    indent,
+                    ui,
+                    idx,
+                    changed,
+                    force_reborrow,
+                );
+            } else {
+                header.set_has_inner(has_inner(&child));
+            }
+            header.store(ui.ctx());
         }
     }
+    true
+}
 
-    fn show_peek_result(peek: PeekResult<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        if let Some(ok) = peek.ok() {
-            ui.colored_label(Color32::GREEN, "Ok:");
-            ui.spacing();
-            Self::show_peek(ok, ui, id.with("ok"))
-        } else if let Some(err) = peek.err() {
-            ui.colored_label(Color32::RED, "Error:");
-            ui.spacing();
-            Self::show_peek(err, ui, id.with("err"))
-        } else {
-            ui.response()
+fn show_inner_rows_poke_enum(
+    mut enu: PokeEnum<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    let variant = match enu.active_variant() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let field_count = variant.data.fields.len();
+    if field_count == 0 {
+        return false;
+    }
+    for idx in 0..field_count {
+        let field_name = variant.data.fields[idx].effective_name().to_owned();
+        if let Ok(Some(field_poke)) = enu.field(idx) {
+            let mut child = MaybeMut::Mut(field_poke);
+            let mut header = show_header(
+                &field_name,
+                &mut child,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                force_reborrow,
+            );
+            if header.openness > 0.0 {
+                show_body(
+                    &mut child,
+                    &mut header,
+                    layout,
+                    indent,
+                    ui,
+                    idx,
+                    changed,
+                    force_reborrow,
+                );
+            } else {
+                header.set_has_inner(has_inner(&child));
+            }
+            header.store(ui.ctx());
         }
     }
+    true
+}
 
-    fn show_peek_set(peek: PeekSet<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        ui.weak(format!("[{}]", peek.len()));
-        ui.vertical(|ui| {
-            for (idx, item) in peek.iter().enumerate() {
-                Self::show_peek(item, ui, id.with(idx));
-            }
-        })
-        .response
+fn show_inner_rows_peek(
+    peek: Peek<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    if let Ok(struc) = peek.into_struct() {
+        show_inner_rows_peek_struct(struc, layout, indent, ui, changed)
+    } else if let Ok(enu) = peek.into_enum() {
+        show_inner_rows_peek_enum(enu, layout, indent, ui, changed)
+    } else if let Ok(list) = peek.into_list_like() {
+        show_inner_rows_peek_list(list, layout, indent, ui, changed)
+    } else if let Ok(map) = peek.into_map() {
+        show_inner_rows_peek_map(map, layout, indent, ui, changed)
+    } else if let Ok(opt) = peek.into_option() {
+        show_inner_rows_peek_option(opt, layout, indent, ui, changed)
+    } else if let Ok(tuple) = peek.into_tuple() {
+        show_inner_rows_peek_tuple(tuple, layout, indent, ui, changed)
+    } else if let Ok(ptr) = peek.into_pointer() {
+        show_inner_rows_peek_pointer(ptr, layout, indent, ui, changed)
+    } else {
+        false
+    }
+}
+
+fn show_inner_rows_peek_struct(
+    struc: PeekStruct<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, (field, value)) in struc.fields().enumerate() {
+        got_inner = true;
+        let field_name = field.effective_name().to_owned();
+        let mut child = MaybeMut::Not(value);
+        let mut header = show_header(
+            &field_name,
+            &mut child,
+            layout,
+            indent,
+            ui,
+            idx,
+            changed,
+            false,
+        );
+        if header.openness > 0.0 {
+            show_body(
+                &mut child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                false,
+            );
+        } else {
+            header.set_has_inner(has_inner(&child));
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
+fn show_inner_rows_peek_enum(
+    enu: PeekEnum<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, (field, value)) in enu.fields().enumerate() {
+        got_inner = true;
+        let field_name = field.effective_name().to_owned();
+        let mut child = MaybeMut::Not(value);
+        let mut header = show_header(
+            &field_name,
+            &mut child,
+            layout,
+            indent,
+            ui,
+            idx,
+            changed,
+            false,
+        );
+        if header.openness > 0.0 {
+            show_body(
+                &mut child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                false,
+            );
+        } else {
+            header.set_has_inner(has_inner(&child));
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
+fn show_inner_rows_peek_list(
+    list: PeekListLike<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, item) in list.iter().enumerate() {
+        got_inner = true;
+        let label = format!("[{idx}]");
+        let mut child = MaybeMut::Not(item);
+        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        if header.openness > 0.0 {
+            show_body(
+                &mut child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                false,
+            );
+        } else {
+            header.set_has_inner(has_inner(&child));
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
+fn show_inner_rows_peek_map(
+    map: PeekMap<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, (key, value)) in map.iter().enumerate() {
+        got_inner = true;
+        let label = format!("{}", key);
+        let mut child = MaybeMut::Not(value);
+        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        if header.openness > 0.0 {
+            show_body(
+                &mut child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                false,
+            );
+        } else {
+            header.set_has_inner(has_inner(&child));
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
+fn show_inner_rows_peek_option(
+    opt: PeekOption<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    if let Some(inner) = opt.value() {
+        let mut child = MaybeMut::Not(inner);
+        return show_inner_rows(&mut child, layout, indent, ui, changed, false);
+    }
+    false
+}
+
+fn show_inner_rows_peek_tuple(
+    tuple: PeekTuple<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, (_field, value)) in tuple.fields().enumerate() {
+        got_inner = true;
+        let label = format!("[{idx}]");
+        let mut child = MaybeMut::Not(value);
+        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        if header.openness > 0.0 {
+            show_body(
+                &mut child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                false,
+            );
+        } else {
+            header.set_has_inner(has_inner(&child));
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
+fn show_inner_rows_peek_pointer(
+    ptr: PeekPointer<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+) -> bool {
+    if let Some(inner) = ptr.borrow_inner() {
+        let mut child = MaybeMut::Not(inner);
+        return show_inner_rows(&mut child, layout, indent, ui, changed, false);
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Inline value rendering (the right-side widget for a row)
+// ---------------------------------------------------------------------------
+
+/// Show the inline (right-side) widget for a value. Returns the Response.
+fn show_inline_value(
+    value: &mut MaybeMut<'_, '_>,
+    ui: &mut Ui,
+    id: Id,
+    force_reborrow: bool,
+) -> Response {
+    match value {
+        MaybeMut::Mut(poke) => show_inline_poke(poke, ui, id, force_reborrow),
+        MaybeMut::Not(peek) => show_inline_peek(*peek, ui, id),
+    }
+}
+
+/// Show inline widget for a mutable value.
+fn show_inline_poke(
+    poke: &mut Poke<'_, '_>,
+    ui: &mut Ui,
+    id: Id,
+    _force_reborrow: bool,
+) -> Response {
+    if let Some(scalar_type) = poke.as_peek().scalar_type() {
+        return show_inline_poke_scalar(poke, scalar_type, ui);
     }
 
-    fn show_peek_struct(peek: PeekStruct<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        ui.vertical(|ui| {
-            for (idx, (field, value)) in peek.fields().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(field.effective_name());
-                    Self::show_peek(value, ui, id.with(idx));
-                });
-            }
-        })
-        .response
+    // For non-scalar types, show a type summary label
+    if poke.is_enum() {
+        return show_inline_poke_enum(poke, ui, id);
+    }
+    if poke.is_struct() {
+        return ui.weak(poke.shape().effective_name());
+    }
+    if let Ok(list) = poke.as_peek().into_list_like() {
+        return ui.weak(format!("[{}]", list.len()));
+    }
+    if let Ok(map) = poke.as_peek().into_map() {
+        return ui.weak(format!("[{}]", map.len()));
+    }
+    if let Ok(opt) = poke.as_peek().into_option() {
+        return show_inline_peek_option(opt, ui, id);
+    }
+    if let Ok(tuple) = poke.as_peek().into_tuple() {
+        return ui.weak(format!("({})", tuple.len()));
+    }
+    if let Ok(ptr) = poke.as_peek().into_pointer()
+        && let Some(inner) = ptr.borrow_inner()
+    {
+        return show_inline_peek(inner, ui, id);
     }
 
-    fn show_peek_tuple(peek: PeekTuple<'_, '_>, ui: &mut Ui, id: Id) -> Response {
-        ui.vertical(|ui| {
-            for (idx, (_field, value)) in peek.fields().enumerate() {
-                Self::show_peek(value, ui, id.with(idx));
-                ui.spacing();
+    ui.weak(poke.shape().effective_name())
+}
+
+/// Show inline widget for a mutable enum: ComboBox to select variant.
+fn show_inline_poke_enum(poke: &mut Poke<'_, '_>, ui: &mut Ui, id: Id) -> Response {
+    let shape = poke.shape();
+    let Type::User(UserType::Enum(enum_type)) = shape.ty else {
+        return ui.weak("enum");
+    };
+
+    // Get the active variant name (Peek is Copy, variant names are 'static)
+    let active_name = poke
+        .as_peek()
+        .into_enum()
+        .ok()
+        .and_then(|e| e.active_variant().ok())
+        .map(|v| v.effective_name())
+        .unwrap_or("?");
+
+    let mut changed = false;
+    let r = egui::ComboBox::from_id_salt(id)
+        .selected_text(active_name)
+        .show_ui(ui, |ui| {
+            for (idx, variant) in enum_type.variants.iter().enumerate() {
+                let variant_name: &str = variant.effective_name();
+                let is_active = variant_name == active_name;
+                if ui.selectable_label(is_active, variant_name).clicked()
+                    && !is_active
+                    && try_change_variant(poke, idx)
+                {
+                    changed = true;
+                }
             }
-        })
-        .response
+        });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
     }
+    r
+}
+
+/// Try to change the enum variant by constructing a new value via `Partial`.
+///
+/// Returns `true` if the variant was successfully changed.
+fn try_change_variant(poke: &mut Poke<'_, '_>, variant_idx: usize) -> bool {
+    let shape = poke.shape();
+    // Build a new enum value with the selected variant using Partial.
+    // SAFETY: The shape used is from the provided Poke
+    let partial = match unsafe { Partial::alloc_shape(shape) } {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("alloc_shape failed: {e}");
+            return false;
+        }
+    };
+    // this is the partial of the to be active variant
+    let mut partial = match partial.select_nth_variant(variant_idx) {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("select_nth_variant failed: {e}");
+            return false;
+        }
+    };
+
+    // Explicitly default each field of the variant.
+    // The variant's fields are available from the shape's enum type.
+    let Type::User(UserType::Enum(enum_type)) = shape.ty else {
+        return false;
+    };
+    let variant = &enum_type.variants[variant_idx];
+    for field_idx in 0..variant.data.fields.len() {
+        partial = match partial.set_nth_field_to_default(field_idx) {
+            Ok(p) => p,
+            Err(e) => {
+                log::debug!(
+                    "set_nth_field_to_default({field_idx}) failed for variant '{}': {e}",
+                    variant.effective_name()
+                );
+                return false;
+            }
+        };
+    }
+
+    let heap_value = match partial.build() {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("build failed: {e}");
+            return false;
+        }
+    };
+
+    let size = shape
+        .layout
+        .sized_layout()
+        .expect("enum must be sized")
+        .size();
+
+    // FIXME: replace once <https://github.com/facet-rs/facet/issues/2152> is implemented
+    assert_eq!(poke.shape(), heap_value.shape());
+    // SAFETY: the Shape is the same and this is the same as core::mem::replace
+    // if we had T
+    unsafe {
+        // Swap the old enum value (in poke) with the new one (in heap_value).
+        // After the swap, heap_value holds the old value — its Drop impl will
+        // call drop_in_place on it and then free the allocation.
+        let dst = poke.data_mut().as_mut_byte_ptr();
+        let src = heap_value.peek().data().as_byte_ptr() as *mut u8;
+        core::ptr::swap_nonoverlapping(dst, src, size);
+    }
+    drop(heap_value);
+
+    true
+}
+
+fn show_inline_poke_scalar(
+    poke: &mut Poke<'_, '_>,
+    scalar_type: ScalarType,
+    ui: &mut Ui,
+) -> Response {
+    match scalar_type {
+        ScalarType::Bool => {
+            if let Ok(v) = poke.get_mut::<bool>() {
+                return ui.add(Checkbox::without_text(v));
+            }
+        }
+        ScalarType::U8 => {
+            if let Ok(v) = poke.get_mut::<u8>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::U16 => {
+            if let Ok(v) = poke.get_mut::<u16>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::U32 => {
+            if let Ok(v) = poke.get_mut::<u32>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::U64 => {
+            if let Ok(v) = poke.get_mut::<u64>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::U128 => {
+            // DragValue doesn't support u128, show as label
+            if let Ok(v) = poke.get::<u128>() {
+                return ui.label(format!("{v}"));
+            }
+        }
+        ScalarType::USize => {
+            if let Ok(v) = poke.get_mut::<usize>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::I8 => {
+            if let Ok(v) = poke.get_mut::<i8>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::I16 => {
+            if let Ok(v) = poke.get_mut::<i16>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::I32 => {
+            if let Ok(v) = poke.get_mut::<i32>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::I64 => {
+            if let Ok(v) = poke.get_mut::<i64>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::I128 => {
+            if let Ok(v) = poke.get::<i128>() {
+                return ui.label(format!("{v}"));
+            }
+        }
+        ScalarType::ISize => {
+            if let Ok(v) = poke.get_mut::<isize>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::F32 => {
+            if let Ok(v) = poke.get_mut::<f32>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::F64 => {
+            if let Ok(v) = poke.get_mut::<f64>() {
+                return ui.add(egui::DragValue::new(v));
+            }
+        }
+        ScalarType::String => {
+            if let Ok(v) = poke.get_mut::<String>() {
+                return ui.add(TextEdit::singleline(v));
+            }
+        }
+        ScalarType::Char => {
+            if let Ok(v) = poke.get::<char>() {
+                let s = v.to_string();
+                return ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()));
+            }
+        }
+        ScalarType::Str => {
+            // str is unsized, fall through to display
+            if poke.shape().is_display() {
+                return ui.label(format!("{}", poke.as_peek()));
+            }
+        }
+        ScalarType::CowStr => {
+            if let Ok(v) = poke.get::<Cow<'_, str>>() {
+                let mut s = v.clone();
+                return ui.add_enabled(false, TextEdit::singleline(&mut s));
+            }
+        }
+        _ if poke.shape().is_display() => {
+            return ui.label(format!("{}", poke.as_peek()));
+        }
+        _ if poke.shape().is_debug() => {
+            return ui.label(format!("{:?}", poke.as_peek()));
+        }
+        _ => {}
+    }
+    ui.colored_label(
+        Color32::YELLOW,
+        format!("unsupported scalar: {scalar_type:?}"),
+    )
+}
+
+/// Show inline widget for a read-only value.
+fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
+    if let Some(scalar_type) = peek.scalar_type() {
+        return show_inline_peek_scalar(peek, scalar_type, ui);
+    }
+
+    if let Ok(enu) = peek.into_enum() {
+        if let Ok(variant) = enu.active_variant() {
+            return ui.weak(variant.effective_name());
+        }
+        return ui.weak("enum");
+    }
+    if let Ok(_struc) = peek.into_struct() {
+        return ui.weak(peek.shape().effective_name());
+    }
+    if let Ok(list) = peek.into_list_like() {
+        return ui.weak(format!("[{}]", list.len()));
+    }
+    if let Ok(map) = peek.into_map() {
+        return ui.weak(format!("[{}]", map.len()));
+    }
+    if let Ok(opt) = peek.into_option() {
+        return show_inline_peek_option(opt, ui, id);
+    }
+    if let Ok(tuple) = peek.into_tuple() {
+        return ui.weak(format!("({})", tuple.len()));
+    }
+    if let Ok(ptr) = peek.into_pointer()
+        && let Some(inner) = ptr.borrow_inner()
+    {
+        return show_inline_peek(inner, ui, id.with("ptr"));
+    }
+
+    ui.weak(peek.shape().effective_name())
+}
+
+fn show_inline_peek_scalar(peek: Peek<'_, '_>, scalar_type: ScalarType, ui: &mut Ui) -> Response {
+    match scalar_type {
+        ScalarType::Bool => {
+            if let Ok(v) = peek.get::<bool>() {
+                let mut value = *v;
+                return ui.add_enabled(false, Checkbox::without_text(&mut value));
+            }
+        }
+        ScalarType::Char => {
+            if let Ok(c) = peek.get::<char>() {
+                let s = c.to_string();
+                return ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()));
+            }
+        }
+        ScalarType::Str => {
+            if let Ok(v) = peek.get::<str>() {
+                return ui.add_enabled(false, TextEdit::singleline(&mut &*v));
+            }
+        }
+        ScalarType::CowStr => {
+            if let Ok(v) = peek.get::<Cow<'_, str>>() {
+                let mut s = v.clone();
+                return ui.add_enabled(false, TextEdit::singleline(&mut s));
+            }
+        }
+        ScalarType::String => {
+            if let Ok(v) = peek.get::<String>() {
+                let mut s: Cow<'_, str> = Cow::Borrowed(v.as_str());
+                return ui.add_enabled(false, TextEdit::singleline(&mut s));
+            }
+        }
+        _ if peek.shape().is_display() => {
+            return ui.label(format!("{}", peek));
+        }
+        _ if peek.shape().is_debug() => {
+            return ui.label(format!("{:?}", peek));
+        }
+        _ => {}
+    }
+    ui.colored_label(
+        Color32::YELLOW,
+        format!("unsupported scalar: {scalar_type:?}"),
+    )
+}
+
+fn show_inline_peek_option(opt: PeekOption<'_, '_>, ui: &mut Ui, id: Id) -> Response {
+    ui.horizontal(|ui| {
+        let is_some = opt.value().is_some();
+        let _ = ui.selectable_label(!is_some, "None");
+        let _ = ui.selectable_label(is_some, "Some");
+        if let Some(inner) = opt.value() {
+            show_inline_peek(inner, ui, id.with("some"));
+        }
+    })
+    .response
 }

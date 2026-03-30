@@ -38,7 +38,7 @@ struct InnerValue {
 pub enum DemoEnumInlined {
     #[default]
     Foo,
-    Bar(String),
+    Bar(String, u32, f32),
     Baz {
         name: u32,
     },
@@ -50,7 +50,7 @@ pub enum DemoEnumInlined {
 pub enum DemoEnumComboBox {
     #[default]
     Foo,
-    Bar(String),
+    Bar(String, u32),
     Baz {
         name: u32,
     },
