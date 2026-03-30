@@ -48,10 +48,7 @@ pub struct MakeLockError<'mem, 'facet> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum MakeLockErrorKind {
-    /// The underlying is not a pointer type (see [`KnownPointer`](facet::KnownPointer))
-    #[error("type is not a pointer")]
-    NoPointer,
-    /// The underlying type is not a type that we can lock from a `&T` to `&mut T`
+    /// The underlying type is not a type that we can lock from a `&T` to `&mut T` (but it is more complicated...)
     #[error("type cannot be locked")]
     NotLockable,
     /// The underlying type could be locked but the provided lock method in the
@@ -147,7 +144,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 // can be set to zero. Now what? We broke it boys
                 let v = v.innermost_peek();
                 // the shape of the pointer type (if it is one) but derefence smart pointers that can so without locking
-                // e.g. Arc<T>
+                // e.g. Arc<T> AND also &T
                 let shape = v.shape();
                 let def = shape.def;
 
@@ -157,7 +154,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 let Def::Pointer(pointer) = def else {
                     return Err(MakeLockError {
                         unchanged: v,
-                        kind: MakeLockErrorKind::NoPointer,
+                        kind: MakeLockErrorKind::NotLockable,
                     });
                 };
 
@@ -266,5 +263,34 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             _guard: Some(lock),
             data: value,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use facet::{Def, Facet, KnownPointer};
+    use facet_reflect::Peek;
+
+    #[derive(Debug, Facet)]
+    struct Foo {
+        value: String,
+    }
+
+    #[facet_testhelpers::test]
+    fn shared_reference() {
+        let a = Foo {
+            value: "aaaa".to_string(),
+        };
+        println!("{:#?}", <&Foo as Facet<'_>>::SHAPE.def);
+        assert!(
+            matches!(<&Foo as Facet<'_>>::SHAPE.def, Def::Pointer(p) if p.known == Some(KnownPointer::SharedReference))
+        );
+        let ref_a: &Foo = &a;
+        let ref_ref_a: &&Foo = &ref_a;
+        let peek = Peek::new(ref_ref_a);
+        println!("{:#?}", peek.shape().def); // `Undefined`
+        assert!(
+            matches!(peek.shape().def, Def::Pointer(p) if p.known == Some(KnownPointer::SharedReference))
+        );
     }
 }

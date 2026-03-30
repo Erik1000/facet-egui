@@ -3,6 +3,10 @@ name = "facet-egui"
 version = "0.1.0"
 edition = "2024"
 
+[[test]]
+name = "comparison_egui_probe"
+harness = false
+
 [features]
 default = ["std", "egui"]
 std = ["facet/std", "facet-reflect/std", "thiserror/std"]
@@ -27,6 +31,9 @@ thiserror = { version = "2", default-features = false }
 [dev-dependencies]
 eframe = { version = "0.33" }
 color-eyre = { version = "0.6" }
+egui-probe = { version = "0.10.0", features = ["derive"] }
+facet-testhelpers = "0.44.3"
+
 
 # [patch.crates-io]
 # facet = { git = "https://github.com/facet-rs/facet.git" }
