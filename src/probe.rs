@@ -2,10 +2,10 @@ use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
-use facet::{Facet, ScalarType, Type, UserType};
+use facet::{Def, Facet, ListDef, ScalarType, Type, UserType};
 use facet_reflect::{
     HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekStruct,
-    PeekTuple, Poke, PokeEnum, PokeStruct,
+    PeekTuple, Poke, PokeEnum, PokeList, PokeStruct,
 };
 
 use crate::{
@@ -431,8 +431,69 @@ fn show_inner_rows_poke(
         }
     }
 
-    // For list, map, tuple, option, pointer — fall through to peek
-    show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed)
+    let data_mut = poke.data_mut();
+    let shape = poke.shape();
+    let poke = match poke.try_reborrow() {
+        Some(rb) => rb,
+        None if force_reborrow => unsafe { Poke::from_raw_parts(poke.data_mut(), poke.shape()) },
+        None => return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed),
+    };
+    if let Ok(poke_list) = poke.into_list() {
+        show_inner_rows_poke_list(poke_list, layout, indent, ui, changed, force_reborrow)
+    } else {
+        // restore old poke
+        // SAFETY: this is ok because there still is only one access to poke due to the if
+        // branch not being reached
+        let poke = unsafe { Poke::from_raw_parts(data_mut, shape) };
+        // For list, map, tuple, option, pointer — fall through to peek
+        show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed)
+    }
+}
+
+fn show_inner_rows_poke_list(
+    mut list: PokeList<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    let len = list.len();
+    if len == 0 {
+        return false;
+    }
+    for idx in 0..len {
+        let label = format!("[{idx}]");
+        if let Some(field_poke) = list.get_mut(idx) {
+            let mut child = MaybeMut::Mut(field_poke);
+            let mut header = show_header(
+                &label,
+                &mut child,
+                layout,
+                indent,
+                ui,
+                idx,
+                changed,
+                force_reborrow,
+            );
+            if header.openness > 0.0 {
+                show_body(
+                    &mut child,
+                    &mut header,
+                    layout,
+                    indent,
+                    ui,
+                    idx,
+                    changed,
+                    force_reborrow,
+                );
+            } else {
+                header.set_has_inner(has_inner(&child));
+            }
+            header.store(ui.ctx());
+        }
+    }
+    true
 }
 
 fn show_inner_rows_poke_struct(
@@ -798,8 +859,8 @@ fn show_inline_poke(
     if poke.is_struct() {
         return ui.weak(poke.shape().effective_name());
     }
-    if let Ok(list) = poke.as_peek().into_list_like() {
-        return ui.weak(format!("[{}]", list.len()));
+    if let Def::List(list_def) = poke.shape().def {
+        return show_inline_poke_list(poke, list_def, ui);
     }
     if let Ok(map) = poke.as_peek().into_map() {
         return ui.weak(format!("[{}]", map.len()));
@@ -817,6 +878,113 @@ fn show_inline_poke(
     }
 
     ui.weak(poke.shape().effective_name())
+}
+
+/// Show inline widget for a mutable list: `[len]` with +/- buttons.
+fn show_inline_poke_list(poke: &mut Poke<'_, '_>, list_def: ListDef, ui: &mut Ui) -> Response {
+    let len = poke
+        .as_peek()
+        .into_list_like()
+        .map(|l| l.len())
+        .unwrap_or(0);
+    let item_shape = list_def.t();
+    let has_default = item_shape.is_default();
+    let has_push = list_def.push().is_some();
+    let has_set_len = list_def.set_len().is_some();
+
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        ui.weak(format!("[{len}]"));
+
+        if has_push && has_default && ui.small_button("+").clicked() {
+            changed |= try_push_default_to_list(poke, list_def);
+        }
+
+        if has_set_len && len > 0 && ui.small_button("-").clicked() {
+            changed |= try_pop_from_list(poke, list_def, item_shape);
+        }
+    });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
+    }
+    r
+}
+
+/// Push a default-constructed element to the list using `Partial`.
+fn try_push_default_to_list(poke: &mut Poke<'_, '_>, list_def: ListDef) -> bool {
+    let item_shape = list_def.t();
+    let push_fn = match list_def.push() {
+        Some(f) => f,
+        None => return false,
+    };
+
+    // SAFETY: item_shape comes from the ListDef of this poke's shape.
+    let partial = match unsafe { Partial::alloc_shape(item_shape) } {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let partial = match partial.set_default() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let heap_value = match partial.build() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // push_fn moves the value out via ptr::read — ownership transfers to the list.
+    // SAFETY: heap_value contains an initialized, aligned value of the correct item type.
+    unsafe {
+        let item_ptr = heap_value.peek().data().as_byte_ptr() as *mut u8;
+        push_fn(poke.data_mut(), facet::PtrMut::new(item_ptr));
+    }
+    // The value has been moved into the list. Prevent HeapValue from dropping
+    // the (now-moved) inner value. This leaks the HeapValue's backing allocation
+    // but is correct per the ListPushFn contract.
+    core::mem::forget(heap_value);
+
+    true
+}
+
+/// Pop the last element from the list by moving it out, shrinking the Vec,
+/// then dropping the extracted element.
+fn try_pop_from_list(
+    poke: &mut Poke<'_, '_>,
+    list_def: ListDef,
+    item_shape: &'static facet::Shape,
+) -> bool {
+    let set_len_fn = match list_def.set_len() {
+        Some(f) => f,
+        None => return false,
+    };
+    let len_fn = list_def.vtable.len;
+    let get_mut_fn = match list_def.vtable.get_mut {
+        Some(f) => f,
+        None => return false,
+    };
+    // SAFETY: poke points to an initialized, aligned list value (Vec<T>).
+    // len_fn and get_mut_fn come from the same ListDef as the poke's shape.
+    let len = unsafe { len_fn(poke.data_mut().as_const()) };
+    if len == 0 {
+        return false;
+    }
+
+    // SAFETY: poke.shape() is the list's shape (Vec<T>), which get_mut_fn
+    // uses to compute element size from type_params[0]. Index is in bounds.
+    let Some(last_ptr) = (unsafe { get_mut_fn(poke.data_mut(), len - 1, poke.shape()) }) else {
+        return false;
+    };
+
+    // SAFETY: After set_len(len - 1) the Vec no longer considers this slot
+    // occupied, but its backing buffer is still allocated — last_ptr remains
+    // valid. We drop in place, mirroring Vec::pop semantics (shrink length,
+    // then drop the element).
+    unsafe { set_len_fn(poke.data_mut(), len - 1) };
+    unsafe { item_shape.call_drop_in_place(last_ptr) };
+
+    true
 }
 
 /// Show inline widget for a mutable enum: ComboBox to select variant.

@@ -8,6 +8,7 @@ use crate::types::DemoValue;
 mod types;
 
 fn main() -> eframe::Result<()> {
+    println!("starting");
     facet_testhelpers::setup();
     let options = eframe::NativeOptions::default();
     eframe::run_native(

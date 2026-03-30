@@ -23,6 +23,9 @@ pub struct DemoValue {
 
     value_enum: DemoEnumInlined,
     value_enum2: DemoEnumComboBox,
+    names: Vec<String>,
+    semi_advanced_list: Vec<DemoEnumInlined>,
+    advanced_list: Vec<InnerValue>,
 }
 
 #[derive(Default, EguiProbe, Facet)]
@@ -32,6 +35,11 @@ struct InnerValue {
     multi_line: String,
 }
 
+impl Drop for InnerValue {
+    fn drop(&mut self) {
+        println!("InnerValue is being dropped");
+    }
+}
 #[derive(Debug, EguiProbe, Facet, Default)]
 #[egui_probe(tags inlined)]
 #[repr(C)]
