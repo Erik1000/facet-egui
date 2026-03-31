@@ -1,5 +1,5 @@
 use derive_more::{Deref, DerefMut, From};
-use facet::{Def, PtrConst, ReadLockResult, Shape, WriteLockResult};
+use facet::{Def, PointerFlags, PtrConst, ReadLockResult, Shape, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
 /// Some reference to a type that implements [`Facet`](facet::Facet) that may be
@@ -130,10 +130,20 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     {
         match self {
             // if we already have a mut this is a no op
-            MaybeMut::Mut(v) => Ok(Guard {
-                _guard: None,
-                data: v.into(),
-            }),
+            MaybeMut::Mut(v) => {
+                // but only if this is a type that is not a smart pointer that can be locked
+                if let Def::Pointer(p) = v.as_peek().innermost_peek().shape().def
+                // restrict downgrading to Peek only if there is a a lock _somewhere_
+                    && p.flags.contains(PointerFlags::LOCK)
+                {
+                    Self::Not(v.into_peek()).write()
+                } else {
+                    Ok(Guard {
+                        _guard: None,
+                        data: v.into(),
+                    })
+                }
+            }
             // this is where it gets interesting
             MaybeMut::Not(v) => {
                 // SAFETY: v.innermost_peek() unwraps all transparent wrappers like Arc or Rc until something that needs

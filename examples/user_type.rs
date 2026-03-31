@@ -25,10 +25,17 @@ pub enum Role {
 }
 
 #[derive(Debug, Facet, Default)]
+struct MetaInfo {
+    not_shared: String,
+    foo: Arc<RwLock<bool>>,
+}
+
+#[derive(Debug, Facet, Default)]
 pub struct User {
-    name: String,
+    name: Arc<RwLock<String>>,
     role: Role,
     reports_to: Vec<User>,
+    meta: Arc<RwLock<MetaInfo>>,
 }
 
 struct App {

@@ -378,14 +378,27 @@ fn show_inner_rows(
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
-    // We dispatch on type shape and enumerate children.
-    // Each child becomes a (label, value) header row that can itself be collapsed.
-
     match value {
         MaybeMut::Mut(poke) => {
             show_inner_rows_poke(poke, layout, indent, ui, changed, force_reborrow)
         }
-        MaybeMut::Not(peek) => show_inner_rows_peek(*peek, layout, indent, ui, changed),
+        MaybeMut::Not(peek) => {
+            show_inner_rows_peek(*peek, layout, indent, ui, changed, force_reborrow)
+        }
+    }
+}
+
+/// Attempt to write-lock a child [`MaybeMut`]. If the child is already
+/// [`MaybeMut::Mut`] or wraps a lockable pointer (e.g. `RwLock`), this
+/// returns a [`Guard`] with mutable access. Otherwise it falls back to
+/// a read lock.
+fn lock_child<'mem, 'facet>(child: MaybeMut<'mem, 'facet>) -> Option<Guard<'mem, 'facet>> {
+    match child.write() {
+        Ok(guard) => Some(guard),
+        Err(e) if matches!(e.kind, MakeLockErrorKind::NotLockable) => {
+            MaybeMut::Not(e.unchanged).read().ok()
+        }
+        Err(_) => None,
     }
 }
 
@@ -406,13 +419,20 @@ fn show_inner_rows_poke(
                 Poke::from_raw_parts(poke.data_mut(), poke.shape())
             },
             None => {
-                return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
+                return show_inner_rows_peek(
+                    poke.as_peek(),
+                    layout,
+                    indent,
+                    ui,
+                    changed,
+                    force_reborrow,
+                );
             }
         };
         if let Ok(enu) = enu_poke.into_enum() {
             return show_inner_rows_poke_enum(enu, layout, indent, ui, changed, force_reborrow);
         }
-        return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
+        return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed, force_reborrow);
     }
 
     // For structs, reborrow to get mutable field access
@@ -423,7 +443,14 @@ fn show_inner_rows_poke(
                 Poke::from_raw_parts(poke.data_mut(), poke.shape())
             },
             None => {
-                return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed);
+                return show_inner_rows_peek(
+                    poke.as_peek(),
+                    layout,
+                    indent,
+                    ui,
+                    changed,
+                    force_reborrow,
+                );
             }
         };
         if let Ok(struc) = reborrow.into_struct() {
@@ -436,7 +463,16 @@ fn show_inner_rows_poke(
     let poke = match poke.try_reborrow() {
         Some(rb) => rb,
         None if force_reborrow => unsafe { Poke::from_raw_parts(poke.data_mut(), poke.shape()) },
-        None => return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed),
+        None => {
+            return show_inner_rows_peek(
+                poke.as_peek(),
+                layout,
+                indent,
+                ui,
+                changed,
+                force_reborrow,
+            );
+        }
     };
     if let Ok(poke_list) = poke.into_list() {
         show_inner_rows_poke_list(poke_list, layout, indent, ui, changed, force_reborrow)
@@ -446,7 +482,8 @@ fn show_inner_rows_poke(
         // branch not being reached
         let poke = unsafe { Poke::from_raw_parts(data_mut, shape) };
         // For list, map, tuple, option, pointer — fall through to peek
-        show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed)
+        ui.weak("fallback");
+        show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed, force_reborrow)
     }
 }
 
@@ -465,10 +502,13 @@ fn show_inner_rows_poke_list(
     for idx in 0..len {
         let label = format!("[{idx}]");
         if let Some(field_poke) = list.get_mut(idx) {
-            let mut child = MaybeMut::Mut(field_poke);
+            let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
+                continue;
+            };
+            let child = &mut *guard;
             let mut header = show_header(
                 &label,
-                &mut child,
+                child,
                 layout,
                 indent,
                 ui,
@@ -478,7 +518,7 @@ fn show_inner_rows_poke_list(
             );
             if header.openness > 0.0 {
                 show_body(
-                    &mut child,
+                    child,
                     &mut header,
                     layout,
                     indent,
@@ -488,7 +528,7 @@ fn show_inner_rows_poke_list(
                     force_reborrow,
                 );
             } else {
-                header.set_has_inner(has_inner(&child));
+                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -511,10 +551,13 @@ fn show_inner_rows_poke_struct(
     for idx in 0..count {
         let field_name = struc.ty().fields[idx].effective_name().to_owned();
         if let Ok(field_poke) = struc.field(idx) {
-            let mut child = MaybeMut::Mut(field_poke);
+            let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
+                continue;
+            };
+            let child = &mut *guard;
             let mut header = show_header(
                 &field_name,
-                &mut child,
+                child,
                 layout,
                 indent,
                 ui,
@@ -524,7 +567,7 @@ fn show_inner_rows_poke_struct(
             );
             if header.openness > 0.0 {
                 show_body(
-                    &mut child,
+                    child,
                     &mut header,
                     layout,
                     indent,
@@ -534,7 +577,7 @@ fn show_inner_rows_poke_struct(
                     force_reborrow,
                 );
             } else {
-                header.set_has_inner(has_inner(&child));
+                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -561,10 +604,13 @@ fn show_inner_rows_poke_enum(
     for idx in 0..field_count {
         let field_name = variant.data.fields[idx].effective_name().to_owned();
         if let Ok(Some(field_poke)) = enu.field(idx) {
-            let mut child = MaybeMut::Mut(field_poke);
+            let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
+                continue;
+            };
+            let child = &mut *guard;
             let mut header = show_header(
                 &field_name,
-                &mut child,
+                child,
                 layout,
                 indent,
                 ui,
@@ -574,7 +620,7 @@ fn show_inner_rows_poke_enum(
             );
             if header.openness > 0.0 {
                 show_body(
-                    &mut child,
+                    child,
                     &mut header,
                     layout,
                     indent,
@@ -584,7 +630,7 @@ fn show_inner_rows_poke_enum(
                     force_reborrow,
                 );
             } else {
-                header.set_has_inner(has_inner(&child));
+                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -598,21 +644,22 @@ fn show_inner_rows_peek(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     if let Ok(struc) = peek.into_struct() {
-        show_inner_rows_peek_struct(struc, layout, indent, ui, changed)
+        show_inner_rows_peek_struct(struc, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(enu) = peek.into_enum() {
-        show_inner_rows_peek_enum(enu, layout, indent, ui, changed)
+        show_inner_rows_peek_enum(enu, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(list) = peek.into_list_like() {
-        show_inner_rows_peek_list(list, layout, indent, ui, changed)
+        show_inner_rows_peek_list(list, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(map) = peek.into_map() {
-        show_inner_rows_peek_map(map, layout, indent, ui, changed)
+        show_inner_rows_peek_map(map, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(opt) = peek.into_option() {
-        show_inner_rows_peek_option(opt, layout, indent, ui, changed)
+        show_inner_rows_peek_option(opt, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(tuple) = peek.into_tuple() {
-        show_inner_rows_peek_tuple(tuple, layout, indent, ui, changed)
+        show_inner_rows_peek_tuple(tuple, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(ptr) = peek.into_pointer() {
-        show_inner_rows_peek_pointer(ptr, layout, indent, ui, changed)
+        show_inner_rows_peek_pointer(ptr, layout, indent, ui, changed, force_reborrow)
     } else {
         false
     }
@@ -624,35 +671,39 @@ fn show_inner_rows_peek_struct(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in struc.fields().enumerate() {
         got_inner = true;
         let field_name = field.effective_name().to_owned();
-        let mut child = MaybeMut::Not(value);
+        let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
+            continue;
+        };
+        let child = &mut *guard;
         let mut header = show_header(
             &field_name,
-            &mut child,
+            child,
             layout,
             indent,
             ui,
             idx,
             changed,
-            false,
+            force_reborrow,
         );
         if header.openness > 0.0 {
             show_body(
-                &mut child,
+                child,
                 &mut header,
                 layout,
                 indent,
                 ui,
                 idx,
                 changed,
-                false,
+                force_reborrow,
             );
         } else {
-            header.set_has_inner(has_inner(&child));
+            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -665,35 +716,39 @@ fn show_inner_rows_peek_enum(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in enu.fields().enumerate() {
         got_inner = true;
         let field_name = field.effective_name().to_owned();
-        let mut child = MaybeMut::Not(value);
+        let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
+            continue;
+        };
+        let child = &mut *guard;
         let mut header = show_header(
             &field_name,
-            &mut child,
+            child,
             layout,
             indent,
             ui,
             idx,
             changed,
-            false,
+            force_reborrow,
         );
         if header.openness > 0.0 {
             show_body(
-                &mut child,
+                child,
                 &mut header,
                 layout,
                 indent,
                 ui,
                 idx,
                 changed,
-                false,
+                force_reborrow,
             );
         } else {
-            header.set_has_inner(has_inner(&child));
+            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -706,26 +761,39 @@ fn show_inner_rows_peek_list(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, item) in list.iter().enumerate() {
         got_inner = true;
         let label = format!("[{idx}]");
-        let mut child = MaybeMut::Not(item);
-        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        let Some(mut guard) = lock_child(MaybeMut::Not(item)) else {
+            continue;
+        };
+        let child = &mut *guard;
+        let mut header = show_header(
+            &label,
+            child,
+            layout,
+            indent,
+            ui,
+            idx,
+            changed,
+            force_reborrow,
+        );
         if header.openness > 0.0 {
             show_body(
-                &mut child,
+                child,
                 &mut header,
                 layout,
                 indent,
                 ui,
                 idx,
                 changed,
-                false,
+                force_reborrow,
             );
         } else {
-            header.set_has_inner(has_inner(&child));
+            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -738,26 +806,39 @@ fn show_inner_rows_peek_map(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (key, value)) in map.iter().enumerate() {
         got_inner = true;
         let label = format!("{}", key);
-        let mut child = MaybeMut::Not(value);
-        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
+            continue;
+        };
+        let child = &mut *guard;
+        let mut header = show_header(
+            &label,
+            child,
+            layout,
+            indent,
+            ui,
+            idx,
+            changed,
+            force_reborrow,
+        );
         if header.openness > 0.0 {
             show_body(
-                &mut child,
+                child,
                 &mut header,
                 layout,
                 indent,
                 ui,
                 idx,
                 changed,
-                false,
+                force_reborrow,
             );
         } else {
-            header.set_has_inner(has_inner(&child));
+            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -770,10 +851,14 @@ fn show_inner_rows_peek_option(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     if let Some(inner) = opt.value() {
-        let mut child = MaybeMut::Not(inner);
-        return show_inner_rows(&mut child, layout, indent, ui, changed, false);
+        let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
+            return false;
+        };
+        let child = &mut *guard;
+        return show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
     }
     false
 }
@@ -784,26 +869,39 @@ fn show_inner_rows_peek_tuple(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (_field, value)) in tuple.fields().enumerate() {
         got_inner = true;
         let label = format!("[{idx}]");
-        let mut child = MaybeMut::Not(value);
-        let mut header = show_header(&label, &mut child, layout, indent, ui, idx, changed, false);
+        let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
+            continue;
+        };
+        let child = &mut *guard;
+        let mut header = show_header(
+            &label,
+            child,
+            layout,
+            indent,
+            ui,
+            idx,
+            changed,
+            force_reborrow,
+        );
         if header.openness > 0.0 {
             show_body(
-                &mut child,
+                child,
                 &mut header,
                 layout,
                 indent,
                 ui,
                 idx,
                 changed,
-                false,
+                force_reborrow,
             );
         } else {
-            header.set_has_inner(has_inner(&child));
+            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -816,10 +914,14 @@ fn show_inner_rows_peek_pointer(
     indent: usize,
     ui: &mut Ui,
     changed: &mut bool,
+    force_reborrow: bool,
 ) -> bool {
     if let Some(inner) = ptr.borrow_inner() {
-        let mut child = MaybeMut::Not(inner);
-        return show_inner_rows(&mut child, layout, indent, ui, changed, false);
+        let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
+            return false;
+        };
+        let child = &mut *guard;
+        return show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
     }
     false
 }
