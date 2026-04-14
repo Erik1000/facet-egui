@@ -1,7 +1,14 @@
 [package]
 name = "facet-maybe-mut"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+authors = ["Erik Tesar <erik@erik-tesar.com>"]
+license = "MIT OR Apache-2.0"
+description = "Utility crate to abstract away lock primitives in facet"
+readme = "../README.md"
+repository = "https://github.com/Erik1000/facet-egui"
+categories = ["concurrency"]
+keywords = ["facet", "reflections", "rwlock", "mutex"]
 
 [dependencies]
 facet = { version = "0.44", default-features = false, features = ["alloc"] }

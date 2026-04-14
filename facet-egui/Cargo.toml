@@ -1,7 +1,14 @@
 [package]
 name = "facet-egui"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+authors = ["Erik Tesar <erik@erik-tesar.com>"]
+license = "MIT OR Apache-2.0"
+description = "An egui inspector/editor widget for any type that implements Facet"
+readme = "../README.md"
+repository = "https://github.com/Erik1000/facet-egui"
+categories = ["gui", "graphics"]
+keywords = ["facet", "reflections", "egui", "probe"]
 
 [[test]]
 name = "comparison_egui_probe"
