@@ -139,14 +139,17 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         };
 
         let maybe_mut = guard.deref_mut();
+        // Use the data pointer as a stable ID salt so that the probe's
+        // collapse/expand state doesn't depend on its position in the UI tree.
+        let id_salt = maybe_mut.as_peek().data().as_byte_ptr() as usize;
         let mut r = ui
-            .allocate_ui(ui.available_size(), |ui| {
+            .push_id(id_salt, |ui| {
                 let child_ui = &mut ui.new_child(
                     UiBuilder::new()
                         .max_rect(ui.max_rect())
                         .layout(Layout::top_down(Align::Min)),
                 );
-                let id = child_ui.next_auto_id();
+                let id = child_ui.id();
 
                 let mut layout = ProbeLayout::load(child_ui.ctx(), id);
 
