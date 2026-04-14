@@ -1,6 +1,6 @@
 mod layout;
-mod maybe_mut;
 #[cfg(feature = "egui")]
+use facet_maybe_mut as maybe_mut;
 mod probe;
 pub use maybe_mut::MaybeMut;
 

@@ -1,0 +1,21 @@
+[package]
+name = "facet-maybe-mut"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+facet = { version = "0.44", default-features = false, features = ["alloc"] }
+facet-reflect = { version = "0.44", default-features = false, features = [
+    "alloc",
+] }
+
+derive_more = { version = "2.1", default-features = false, features = [
+    "from",
+    "deref",
+    "deref_mut",
+    "debug",
+] }
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+facet-testhelpers = "0.44.3"

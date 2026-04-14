@@ -1170,6 +1170,7 @@ dependencies = [
  "egui",
  "egui-probe",
  "facet",
+ "facet-maybe-mut",
  "facet-reflect",
  "facet-testhelpers",
  "log",
@@ -1218,6 +1219,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unsynn",
+]
+
+[[package]]
+name = "facet-maybe-mut"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "facet",
+ "facet-reflect",
+ "facet-testhelpers",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
