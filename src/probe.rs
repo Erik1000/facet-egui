@@ -9,10 +9,43 @@ use facet_reflect::{
 };
 
 use crate::{
-    EguiAttr, MaybeMut,
+    Attr, MaybeMut,
     layout::{ProbeHeader, ProbeLayout},
     maybe_mut::{Guard, MakeLockErrorKind},
 };
+
+/// Returns `true` if the given attributes slice contains `Attr::Skip`.
+fn has_egui_skip(attributes: &[facet::Attr]) -> bool {
+    attributes
+        .iter()
+        .filter_map(|a| a.get_as::<crate::Attr>())
+        .any(|a| matches!(a, Attr::Skip))
+}
+
+/// Returns the `Attr::Rename` value from the attributes, if present.
+fn egui_rename(attributes: &[facet::Attr]) -> Option<&'static str> {
+    attributes
+        .iter()
+        .filter_map(|a| a.get_as::<crate::Attr>())
+        .find_map(|a| match a {
+            Attr::Rename(name) => Some(*name),
+            _ => None,
+        })
+}
+
+/// Returns the display name for a field: uses `egui::rename` if present,
+/// otherwise falls back to `effective_name()`.
+fn field_display_name(field: &facet::Field) -> String {
+    egui_rename(field.attributes)
+        .unwrap_or_else(|| field.effective_name())
+        .to_owned()
+}
+
+/// Returns the display name for a shape: uses `egui::rename` if present,
+/// otherwise falls back to `effective_name()`.
+fn shape_display_name(shape: &facet::Shape) -> &str {
+    egui_rename(shape.attributes).unwrap_or_else(|| shape.effective_name())
+}
 
 /// The container that stores a [`MaybeMut`] of the type `T` that should be shown
 /// in the [`Ui`](egui::Ui)
@@ -106,14 +139,19 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     where
         'mem: 'lock,
     {
+        // Container-level skip: hide the entire probe
+        if has_egui_skip(self.shape().attributes) {
+            return ui.label("");
+        }
+
         let mut changed = false;
 
         let mut attributes = self
             .shape()
             .attributes
             .iter()
-            .filter_map(|x| x.get_as::<crate::EguiAttr>());
-        let readonly = attributes.any(|x| matches!(x, EguiAttr::Readonly)) || self.read_only;
+            .filter_map(|x| x.get_as::<crate::Attr>());
+        let readonly = attributes.any(|x| matches!(x, Attr::Readonly)) || self.read_only;
         let mut guard: Guard<'lock, 'facet> = if readonly {
             let Ok(read) = self.inner.read() else {
                 return ui.colored_label(Color32::RED, "Read Failure");
@@ -125,7 +163,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                 // fallback to readonly
                 Err(e) if matches!(e.kind, MakeLockErrorKind::NotLockable) => {
                     let Ok(read) = MaybeMut::Not(e.unchanged).read() else {
-                        return ui.colored_label(Color32::RED, "Cannot display readonly value");
+                        return ui.colored_label(Color32::RED, "Fallback Read Failure");
                     };
                     read
                 }
@@ -484,7 +522,8 @@ fn show_inner_rows_poke(
         // SAFETY: this is ok because there still is only one access to poke due to the if
         // branch not being reached
         let poke = unsafe { Poke::from_raw_parts(data_mut, shape) };
-        // For list, map, tuple, option, pointer — fall through to peek
+        // For list, list, map, tuple, option, pointer — fall through to peek
+        ui.weak("fallback");
         ui.weak("fallback");
         show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed, force_reborrow)
     }
@@ -551,13 +590,26 @@ fn show_inner_rows_poke_struct(
     if count == 0 {
         return false;
     }
+    let mut got_inner = false;
     for idx in 0..count {
-        let field_name = struc.ty().fields[idx].effective_name().to_owned();
+        let field = &struc.ty().fields[idx];
+        if has_egui_skip(field.attributes) {
+            continue;
+        }
         if let Ok(field_poke) = struc.field(idx) {
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
             let child = &mut *guard;
+            if field.is_flattened() {
+                ui.push_id(idx, |ui| {
+                    got_inner |=
+                        show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+                });
+                continue;
+            }
+            got_inner = true;
+            let field_name = field_display_name(field);
             let mut header = show_header(
                 &field_name,
                 child,
@@ -585,7 +637,7 @@ fn show_inner_rows_poke_struct(
             header.store(ui.ctx());
         }
     }
-    true
+    got_inner
 }
 
 fn show_inner_rows_poke_enum(
@@ -604,13 +656,25 @@ fn show_inner_rows_poke_enum(
     if field_count == 0 {
         return false;
     }
+    let mut got_inner = false;
     for idx in 0..field_count {
-        let field_name = variant.data.fields[idx].effective_name().to_owned();
+        let field = &variant.data.fields[idx];
+        if has_egui_skip(field.attributes) {
+            continue;
+        }
         if let Ok(Some(field_poke)) = enu.field(idx) {
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
             let child = &mut *guard;
+            if field.is_flattened() {
+                ui.push_id(idx, |ui| {
+                    got_inner |=
+                        show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+                });
+                continue;
+            }
+            let field_name = field_display_name(field);
             let mut header = show_header(
                 &field_name,
                 child,
@@ -638,7 +702,7 @@ fn show_inner_rows_poke_enum(
             header.store(ui.ctx());
         }
     }
-    true
+    got_inner
 }
 
 fn show_inner_rows_peek(
@@ -678,12 +742,21 @@ fn show_inner_rows_peek_struct(
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in struc.fields().enumerate() {
-        got_inner = true;
-        let field_name = field.effective_name().to_owned();
+        if has_egui_skip(field.attributes) {
+            continue;
+        }
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
         let child = &mut *guard;
+        if field.is_flattened() {
+            ui.push_id(idx, |ui| {
+                got_inner |= show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+            });
+            continue;
+        }
+        got_inner = true;
+        let field_name = field_display_name(&field);
         let mut header = show_header(
             &field_name,
             child,
@@ -723,12 +796,21 @@ fn show_inner_rows_peek_enum(
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in enu.fields().enumerate() {
-        got_inner = true;
-        let field_name = field.effective_name().to_owned();
+        if has_egui_skip(field.attributes) {
+            continue;
+        }
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
         let child = &mut *guard;
+        if field.is_flattened() {
+            ui.push_id(idx, |ui| {
+                got_inner |= show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+            });
+            continue;
+        }
+        got_inner = true;
+        let field_name = field_display_name(&field);
         let mut header = show_header(
             &field_name,
             child,
@@ -962,7 +1044,7 @@ fn show_inline_poke(
         return show_inline_poke_enum(poke, ui, id);
     }
     if poke.is_struct() {
-        return ui.weak(poke.shape().effective_name());
+        return ui.weak(shape_display_name(poke.shape()));
     }
     if let Def::List(list_def) = poke.shape().def {
         return show_inline_poke_list(poke, list_def, ui);
@@ -982,7 +1064,7 @@ fn show_inline_poke(
         return show_inline_peek(inner, ui, id);
     }
 
-    ui.weak(poke.shape().effective_name())
+    ui.weak(shape_display_name(poke.shape()))
 }
 
 /// Show inline widget for a mutable list: `[len]` with +/- buttons.
@@ -1336,7 +1418,7 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
         return ui.weak("enum");
     }
     if let Ok(_struc) = peek.into_struct() {
-        return ui.weak(peek.shape().effective_name());
+        return ui.weak(shape_display_name(peek.shape()));
     }
     if let Ok(list) = peek.into_list_like() {
         return ui.weak(format!("[{}]", list.len()));
@@ -1356,7 +1438,7 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
         return show_inline_peek(inner, ui, id.with("ptr"));
     }
 
-    ui.weak(peek.shape().effective_name())
+    ui.weak(shape_display_name(peek.shape()))
 }
 
 fn show_inline_peek_scalar(peek: Peek<'_, '_>, scalar_type: ScalarType, ui: &mut Ui) -> Response {
