@@ -20,7 +20,7 @@ std = ["facet/std", "facet-reflect/std", "thiserror/std"]
 egui = ["dep:egui"]
 
 [dependencies]
-facet-maybe-mut = { path = "../facet-maybe-mut" }
+facet-maybe-mut.workspace = true
 
 egui = { version = "0.33.3", default-features = false, optional = true }
 facet = { version = "0.44", default-features = false, features = ["alloc"] }
