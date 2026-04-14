@@ -2,7 +2,7 @@ use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
-use facet::{Def, Facet, ListDef, ScalarType, Type, UserType};
+use facet::{Def, Facet, ListDef, OptionDef, ScalarType, Type, UserType};
 use facet_reflect::{
     HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekStruct,
     PeekTuple, Poke, PokeEnum, PokeList, PokeStruct,
@@ -261,6 +261,12 @@ fn has_inner(value: &MaybeMut<'_, '_>) -> bool {
     let peek = value.as_peek();
     // Structs with fields, enums with variant fields, lists, maps, options
     // with inner, tuples, sets, pointers to inner — all have inner content.
+    // Option/Result must be checked before enum, since they also match into_enum().
+    if let Ok(opt) = peek.into_option()
+        && let Some(inner) = opt.value()
+    {
+        return has_inner(&MaybeMut::Not(inner));
+    }
     if let Ok(s) = peek.into_struct() {
         return s.field_count() > 0;
     }
@@ -274,11 +280,6 @@ fn has_inner(value: &MaybeMut<'_, '_>) -> bool {
     }
     if let Ok(m) = peek.into_map() {
         return !m.is_empty();
-    }
-    if let Ok(opt) = peek.into_option()
-        && let Some(inner) = opt.value()
-    {
-        return has_inner(&MaybeMut::Not(inner));
     }
     if let Ok(t) = peek.into_tuple() {
         return !t.is_empty();
@@ -451,6 +452,20 @@ fn show_inner_rows_poke(
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
+    // Option/Result have Def::Option/Def::Result but Type::User(UserType::Enum),
+    // so check Def before is_enum() to avoid misrouting.
+    if let Def::Option(option_def) = poke.shape().def {
+        return show_inner_rows_poke_option(
+            poke,
+            option_def,
+            layout,
+            indent,
+            ui,
+            changed,
+            force_reborrow,
+        );
+    }
+
     // For enums, we can use into_enum directly without reborrowing,
     // since PokeEnum.field() takes &mut self.
     if poke.is_enum() {
@@ -713,7 +728,9 @@ fn show_inner_rows_peek(
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
-    if let Ok(struc) = peek.into_struct() {
+    if let Ok(opt) = peek.into_option() {
+        show_inner_rows_peek_option(opt, layout, indent, ui, changed, force_reborrow)
+    } else if let Ok(struc) = peek.into_struct() {
         show_inner_rows_peek_struct(struc, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(enu) = peek.into_enum() {
         show_inner_rows_peek_enum(enu, layout, indent, ui, changed, force_reborrow)
@@ -721,8 +738,6 @@ fn show_inner_rows_peek(
         show_inner_rows_peek_list(list, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(map) = peek.into_map() {
         show_inner_rows_peek_map(map, layout, indent, ui, changed, force_reborrow)
-    } else if let Ok(opt) = peek.into_option() {
-        show_inner_rows_peek_option(opt, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(tuple) = peek.into_tuple() {
         show_inner_rows_peek_tuple(tuple, layout, indent, ui, changed, force_reborrow)
     } else if let Ok(ptr) = peek.into_pointer() {
@@ -1033,13 +1048,18 @@ fn show_inline_poke(
     poke: &mut Poke<'_, '_>,
     ui: &mut Ui,
     id: Id,
-    _force_reborrow: bool,
+    force_reborrow: bool,
 ) -> Response {
     if let Some(scalar_type) = poke.as_peek().scalar_type() {
         return show_inline_poke_scalar(poke, scalar_type, ui);
     }
 
     // For non-scalar types, show a type summary label
+    // Option/Result have Def::Option/Def::Result but Type::User(UserType::Enum),
+    // so check Def before is_enum() to avoid misrouting.
+    if let Def::Option(option_def) = poke.shape().def {
+        return show_inline_poke_option(poke, option_def, ui, id, force_reborrow);
+    }
     if poke.is_enum() {
         return show_inline_poke_enum(poke, ui, id);
     }
@@ -1051,9 +1071,6 @@ fn show_inline_poke(
     }
     if let Ok(map) = poke.as_peek().into_map() {
         return ui.weak(format!("[{}]", map.len()));
-    }
-    if let Ok(opt) = poke.as_peek().into_option() {
-        return show_inline_peek_option(opt, ui, id);
     }
     if let Ok(tuple) = poke.as_peek().into_tuple() {
         return ui.weak(format!("({})", tuple.len()));
@@ -1172,6 +1189,114 @@ fn try_pop_from_list(
     unsafe { item_shape.call_drop_in_place(last_ptr) };
 
     true
+}
+
+/// Show inline widget for a mutable option: toggle between None and Some.
+fn show_inline_poke_option(
+    poke: &mut Poke<'_, '_>,
+    option_def: OptionDef,
+    ui: &mut Ui,
+    id: Id,
+    force_reborrow: bool,
+) -> Response {
+    let is_some = unsafe { (option_def.vtable.is_some)(poke.data_mut().as_const()) };
+
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        if ui.selectable_label(!is_some, "None").clicked() && is_some {
+            // Switch from Some to None
+            // SAFETY:
+            // According to facet docs, it should be set to a null pointer to
+            // set it to Option::None
+            // See <https://docs.rs/facet-core/0.44.3/facet_core/type.OptionReplaceWithFn.html>
+            unsafe {
+                (option_def.vtable.replace_with)(poke.data_mut(), std::ptr::null_mut());
+            }
+            changed = true;
+        }
+        if ui.selectable_label(is_some, "Some").clicked() && !is_some {
+            // Switch from None to Some(default)
+            changed = try_set_option_to_some_default(poke, option_def);
+        }
+        if is_some {
+            let inner_ptr = unsafe { (option_def.vtable.get_value)(poke.data_mut().as_const()) };
+            if !inner_ptr.is_null() {
+                // SAFETY: We have unique mutable access through poke, and the inner value
+                // is stored within the Option's memory. The shape matches the inner type.
+                let mut inner_poke = unsafe {
+                    Poke::from_raw_parts(facet::PtrMut::new(inner_ptr as *mut u8), option_def.t())
+                };
+                show_inline_poke(&mut inner_poke, ui, id.with("some"), force_reborrow);
+            }
+        }
+    });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
+    }
+    r
+}
+
+/// Set an Option from None to Some(T::default()) using the OptionVTable.
+fn try_set_option_to_some_default(poke: &mut Poke<'_, '_>, option_def: OptionDef) -> bool {
+    let inner_shape = option_def.t();
+
+    // Allocate and default-construct the inner value
+    // SAFETY: inner_shape comes from the OptionDef of this poke's shape.
+    let partial = match unsafe { Partial::alloc_shape(inner_shape) } {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let partial = match partial.set_default() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let heap_value = match partial.build() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Move the default value into the Option via replace_with.
+    // SAFETY: heap_value contains an initialized, aligned value of the correct inner type.
+    // replace_with moves from the pointer (ptr::read), so we must forget the heap_value
+    // to avoid double-free.
+    unsafe {
+        let value_ptr = heap_value.peek().data().as_byte_ptr() as *mut u8;
+        (option_def.vtable.replace_with)(poke.data_mut(), value_ptr);
+    }
+    core::mem::forget(heap_value);
+
+    true
+}
+
+/// Show inner rows for a mutable Option. When Some, shows the inner value mutably.
+fn show_inner_rows_poke_option(
+    poke: &mut Poke<'_, '_>,
+    option_def: OptionDef,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+) -> bool {
+    let is_some = unsafe { (option_def.vtable.is_some)(poke.data_mut().as_const()) };
+    if !is_some {
+        return false;
+    }
+
+    let inner_ptr = unsafe { (option_def.vtable.get_value)(poke.data_mut().as_const()) };
+    if inner_ptr.is_null() {
+        return false;
+    }
+
+    // SAFETY: We have unique mutable access through poke, and the inner value
+    // is stored within the Option's memory. The shape matches the inner type.
+    let inner_poke =
+        unsafe { Poke::from_raw_parts(facet::PtrMut::new(inner_ptr as *mut u8), option_def.t()) };
+
+    let mut child = MaybeMut::Mut(inner_poke);
+    show_inner_rows(&mut child, layout, indent, ui, changed, force_reborrow)
 }
 
 /// Show inline widget for a mutable enum: ComboBox to select variant.
@@ -1411,6 +1536,11 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
         return show_inline_peek_scalar(peek, scalar_type, ui);
     }
 
+    // Option/Result have Def::Option/Def::Result but Type::User(UserType::Enum),
+    // so check into_option before into_enum to avoid misrouting.
+    if let Ok(opt) = peek.into_option() {
+        return show_inline_peek_option(opt, ui, id);
+    }
     if let Ok(enu) = peek.into_enum() {
         if let Ok(variant) = enu.active_variant() {
             return ui.weak(variant.effective_name());
@@ -1425,9 +1555,6 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
     }
     if let Ok(map) = peek.into_map() {
         return ui.weak(format!("[{}]", map.len()));
-    }
-    if let Ok(opt) = peek.into_option() {
-        return show_inline_peek_option(opt, ui, id);
     }
     if let Ok(tuple) = peek.into_tuple() {
         return ui.weak(format!("({})", tuple.len()));

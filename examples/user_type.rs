@@ -36,6 +36,8 @@ pub struct User {
     role: Role,
     reports_to: Vec<User>,
     meta: Arc<RwLock<MetaInfo>>,
+    option: Option<Role>,
+    option2: Option<MetaInfo>,
 }
 
 struct App {
@@ -46,11 +48,13 @@ impl App {
     fn new() -> Self {
         let shared = Arc::new(RwLock::new(User::default()));
         let other_thread = shared.clone();
-        std::thread::spawn(move || loop {
-            let guard = other_thread.read().unwrap();
-            println!("{guard:#?}");
-            drop(guard);
-            std::thread::sleep(Duration::from_secs_f32(0.5));
+        std::thread::spawn(move || {
+            loop {
+                let guard = other_thread.read().unwrap();
+                println!("{guard:#?}");
+                drop(guard);
+                std::thread::sleep(Duration::from_secs_f32(0.5));
+            }
         });
         Self { shared }
     }
