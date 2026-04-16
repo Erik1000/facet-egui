@@ -55,6 +55,13 @@ impl ProbeHeader {
         self.dirty = true;
     }
 
+    pub fn set_open(&mut self, open: bool) {
+        if self.state.open != open {
+            self.state.open = open;
+            self.dirty = true;
+        }
+    }
+
     pub fn set_body_height(&mut self, height: f32) {
         if (self.state.body_height - height).abs() > 0.001 {
             self.state.body_height = height;

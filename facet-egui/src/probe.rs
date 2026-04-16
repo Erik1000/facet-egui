@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
@@ -55,6 +57,7 @@ pub struct FacetProbe<'mem, 'facet> {
     header: Option<WidgetText>,
     id: Option<Id>,
     read_only: bool,
+    expand_all: bool,
     /// SAFETY: if used, there is a high chance what you do is unsound.
     ///
     /// If you use this, you will have to manually ensure your variances are
@@ -77,6 +80,13 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn readonly(self) -> Self {
         Self {
             read_only: true,
+            ..self
+        }
+    }
+
+    pub fn expand_all(self) -> Self {
+        Self {
+            expand_all: true,
             ..self
         }
     }
@@ -115,6 +125,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             header: None,
             id: None,
             read_only: true,
+            expand_all: false,
             force_reborrow: false,
             inner: MaybeMut::Not(value),
         }
@@ -125,6 +136,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             header: None,
             id: None,
             read_only: false,
+            expand_all: false,
             force_reborrow: false,
             inner: MaybeMut::Mut(value),
         }
@@ -143,6 +155,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             header: None,
             id: None,
             read_only: false,
+            expand_all: false,
             force_reborrow: false,
             inner,
         }
@@ -165,6 +178,16 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             .iter()
             .filter_map(|x| x.get_as::<crate::Attr>());
         let readonly = attributes.any(|x| matches!(x, Attr::Readonly)) || self.read_only;
+
+        // Check for expand_all attribute (or use self.expand_all)
+        let expand_all = self.expand_all
+            || self
+                .shape()
+                .attributes
+                .iter()
+                .filter_map(|x| x.get_as::<crate::Attr>())
+                .any(|x| matches!(x, Attr::ExpandAll));
+
         let mut guard: Guard<'lock, 'facet> = if readonly {
             let Ok(read) = self.inner.read() else {
                 return ui.colored_label(Color32::RED, "Read Failure");
@@ -217,6 +240,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         probe_id.with("root"),
                         &mut changed,
                         self.force_reborrow,
+                        expand_all,
                     );
 
                     if header.openness > 0.0 {
@@ -229,6 +253,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                             probe_id.with("root"),
                             &mut changed,
                             self.force_reborrow,
+                            expand_all,
                         );
                     } else {
                         header.set_has_inner(has_inner(maybe_mut));
@@ -245,6 +270,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         probe_id.with("root"),
                         &mut changed,
                         self.force_reborrow,
+                        expand_all,
                     );
                 }
 
@@ -319,8 +345,13 @@ fn show_header(
     id: Id,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> ProbeHeader {
     let mut header = ProbeHeader::load(ui.ctx(), id);
+
+    if expand_all && header.has_inner() {
+        header.set_open(true);
+    }
 
     ui.horizontal(|ui| {
         let label_response = layout.inner_label_ui(indent, id.with("label"), ui, |ui| {
@@ -351,6 +382,7 @@ fn show_body(
     id: Id,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) {
     let cursor = ui.cursor();
     let table_rect = egui::Rect::from_min_max(
@@ -377,6 +409,7 @@ fn show_body(
         &mut table_ui,
         changed,
         force_reborrow,
+        expand_all,
     );
     header.set_has_inner(got_inner);
 
@@ -396,6 +429,7 @@ fn show_body_direct(
     id: Id,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) {
     let cursor = ui.cursor();
     let table_rect =
@@ -420,6 +454,7 @@ fn show_body_direct(
         &mut table_ui,
         changed,
         force_reborrow,
+        expand_all,
     );
 
     let final_table_rect = table_ui.min_rect();
@@ -436,14 +471,29 @@ fn show_inner_rows(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     match value {
-        MaybeMut::Mut(poke) => {
-            show_inner_rows_poke(poke, layout, indent, id, ui, changed, force_reborrow)
-        }
-        MaybeMut::Not(peek) => {
-            show_inner_rows_peek(*peek, layout, indent, id, ui, changed, force_reborrow)
-        }
+        MaybeMut::Mut(poke) => show_inner_rows_poke(
+            poke,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        ),
+        MaybeMut::Not(peek) => show_inner_rows_peek(
+            *peek,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        ),
     }
 }
 
@@ -469,6 +519,7 @@ fn show_inner_rows_poke(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     // Option/Result have Def::Option/Def::Result but Type::User(UserType::Enum),
     // so check Def before is_enum() to avoid misrouting.
@@ -482,6 +533,7 @@ fn show_inner_rows_poke(
             ui,
             changed,
             force_reborrow,
+            expand_all,
         );
     }
 
@@ -502,11 +554,21 @@ fn show_inner_rows_poke(
                     ui,
                     changed,
                     force_reborrow,
+                    expand_all,
                 );
             }
         };
         if let Ok(enu) = enu_poke.into_enum() {
-            return show_inner_rows_poke_enum(enu, layout, indent, id, ui, changed, force_reborrow);
+            return show_inner_rows_poke_enum(
+                enu,
+                layout,
+                indent,
+                id,
+                ui,
+                changed,
+                force_reborrow,
+                expand_all,
+            );
         }
         return show_inner_rows_peek(
             poke.as_peek(),
@@ -516,6 +578,7 @@ fn show_inner_rows_poke(
             ui,
             changed,
             force_reborrow,
+            expand_all,
         );
     }
 
@@ -535,6 +598,7 @@ fn show_inner_rows_poke(
                     ui,
                     changed,
                     force_reborrow,
+                    expand_all,
                 );
             }
         };
@@ -547,6 +611,7 @@ fn show_inner_rows_poke(
                 ui,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         }
     }
@@ -565,11 +630,21 @@ fn show_inner_rows_poke(
                 ui,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         }
     };
     if let Ok(poke_list) = poke.into_list() {
-        show_inner_rows_poke_list(poke_list, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_poke_list(
+            poke_list,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else {
         // restore old poke
         // SAFETY: this is ok because there still is only one access to poke due to the if
@@ -586,6 +661,7 @@ fn show_inner_rows_poke(
             ui,
             changed,
             force_reborrow,
+            expand_all,
         )
     }
 }
@@ -598,6 +674,7 @@ fn show_inner_rows_poke_list(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let len = list.len();
     if len == 0 {
@@ -620,6 +697,7 @@ fn show_inner_rows_poke_list(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
             if header.openness > 0.0 {
                 show_body(
@@ -631,6 +709,7 @@ fn show_inner_rows_poke_list(
                     row_id,
                     changed,
                     force_reborrow,
+                    expand_all,
                 );
             } else {
                 header.set_has_inner(has_inner(child));
@@ -649,6 +728,7 @@ fn show_inner_rows_poke_struct(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let count = struc.field_count();
     if count == 0 {
@@ -668,8 +748,16 @@ fn show_inner_rows_poke_struct(
             let child = &mut *guard;
             if field.is_flattened() {
                 ui.push_id(row_id, |ui| {
-                    got_inner |=
-                        show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
+                    got_inner |= show_inner_rows(
+                        child,
+                        layout,
+                        indent,
+                        row_id,
+                        ui,
+                        changed,
+                        force_reborrow,
+                        expand_all,
+                    );
                 });
                 continue;
             }
@@ -684,6 +772,7 @@ fn show_inner_rows_poke_struct(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
             if header.openness > 0.0 {
                 show_body(
@@ -695,6 +784,7 @@ fn show_inner_rows_poke_struct(
                     row_id,
                     changed,
                     force_reborrow,
+                    expand_all,
                 );
             } else {
                 header.set_has_inner(has_inner(child));
@@ -713,6 +803,7 @@ fn show_inner_rows_poke_enum(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let variant = match enu.active_variant() {
         Ok(v) => v,
@@ -736,8 +827,16 @@ fn show_inner_rows_poke_enum(
             let child = &mut *guard;
             if field.is_flattened() {
                 ui.push_id(row_id, |ui| {
-                    got_inner |=
-                        show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
+                    got_inner |= show_inner_rows(
+                        child,
+                        layout,
+                        indent,
+                        row_id,
+                        ui,
+                        changed,
+                        force_reborrow,
+                        expand_all,
+                    );
                 });
                 continue;
             }
@@ -751,6 +850,7 @@ fn show_inner_rows_poke_enum(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
             if header.openness > 0.0 {
                 show_body(
@@ -762,6 +862,7 @@ fn show_inner_rows_poke_enum(
                     row_id,
                     changed,
                     force_reborrow,
+                    expand_all,
                 );
             } else {
                 header.set_has_inner(has_inner(child));
@@ -780,21 +881,85 @@ fn show_inner_rows_peek(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     if let Ok(opt) = peek.into_option() {
-        show_inner_rows_peek_option(opt, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_option(
+            opt,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(struc) = peek.into_struct() {
-        show_inner_rows_peek_struct(struc, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_struct(
+            struc,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(enu) = peek.into_enum() {
-        show_inner_rows_peek_enum(enu, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_enum(
+            enu,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(list) = peek.into_list_like() {
-        show_inner_rows_peek_list(list, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_list(
+            list,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(map) = peek.into_map() {
-        show_inner_rows_peek_map(map, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_map(
+            map,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(tuple) = peek.into_tuple() {
-        show_inner_rows_peek_tuple(tuple, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_tuple(
+            tuple,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(ptr) = peek.into_pointer() {
-        show_inner_rows_peek_pointer(ptr, layout, indent, id, ui, changed, force_reborrow)
+        show_inner_rows_peek_pointer(
+            ptr,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else {
         false
     }
@@ -808,6 +973,7 @@ fn show_inner_rows_peek_struct(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in struc.fields().enumerate() {
@@ -821,8 +987,16 @@ fn show_inner_rows_peek_struct(
         let child = &mut *guard;
         if field.is_flattened() {
             ui.push_id(row_id, |ui| {
-                got_inner |=
-                    show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
+                got_inner |= show_inner_rows(
+                    child,
+                    layout,
+                    indent,
+                    row_id,
+                    ui,
+                    changed,
+                    force_reborrow,
+                    expand_all,
+                );
             });
             continue;
         }
@@ -837,6 +1011,7 @@ fn show_inner_rows_peek_struct(
             row_id,
             changed,
             force_reborrow,
+            expand_all,
         );
         if header.openness > 0.0 {
             show_body(
@@ -848,6 +1023,7 @@ fn show_inner_rows_peek_struct(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         } else {
             header.set_has_inner(has_inner(child));
@@ -865,6 +1041,7 @@ fn show_inner_rows_peek_enum(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in enu.fields().enumerate() {
@@ -878,8 +1055,16 @@ fn show_inner_rows_peek_enum(
         let child = &mut *guard;
         if field.is_flattened() {
             ui.push_id(row_id, |ui| {
-                got_inner |=
-                    show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
+                got_inner |= show_inner_rows(
+                    child,
+                    layout,
+                    indent,
+                    row_id,
+                    ui,
+                    changed,
+                    force_reborrow,
+                    expand_all,
+                );
             });
             continue;
         }
@@ -894,6 +1079,7 @@ fn show_inner_rows_peek_enum(
             row_id,
             changed,
             force_reborrow,
+            expand_all,
         );
         if header.openness > 0.0 {
             show_body(
@@ -905,6 +1091,7 @@ fn show_inner_rows_peek_enum(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         } else {
             header.set_has_inner(has_inner(child));
@@ -922,6 +1109,7 @@ fn show_inner_rows_peek_list(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, item) in list.iter().enumerate() {
@@ -941,6 +1129,7 @@ fn show_inner_rows_peek_list(
             row_id,
             changed,
             force_reborrow,
+            expand_all,
         );
         if header.openness > 0.0 {
             show_body(
@@ -952,6 +1141,7 @@ fn show_inner_rows_peek_list(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         } else {
             header.set_has_inner(has_inner(child));
@@ -969,6 +1159,7 @@ fn show_inner_rows_peek_map(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (key, value)) in map.iter().enumerate() {
@@ -988,6 +1179,7 @@ fn show_inner_rows_peek_map(
             row_id,
             changed,
             force_reborrow,
+            expand_all,
         );
         if header.openness > 0.0 {
             show_body(
@@ -999,6 +1191,7 @@ fn show_inner_rows_peek_map(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         } else {
             header.set_has_inner(has_inner(child));
@@ -1016,6 +1209,7 @@ fn show_inner_rows_peek_option(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     if let Some(inner) = opt.value() {
         let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
@@ -1030,6 +1224,7 @@ fn show_inner_rows_peek_option(
             ui,
             changed,
             force_reborrow,
+            expand_all,
         );
     }
     false
@@ -1043,6 +1238,7 @@ fn show_inner_rows_peek_tuple(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (_field, value)) in tuple.fields().enumerate() {
@@ -1062,6 +1258,7 @@ fn show_inner_rows_peek_tuple(
             row_id,
             changed,
             force_reborrow,
+            expand_all,
         );
         if header.openness > 0.0 {
             show_body(
@@ -1073,6 +1270,7 @@ fn show_inner_rows_peek_tuple(
                 row_id,
                 changed,
                 force_reborrow,
+                expand_all,
             );
         } else {
             header.set_has_inner(has_inner(child));
@@ -1090,6 +1288,7 @@ fn show_inner_rows_peek_pointer(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     if let Some(inner) = ptr.borrow_inner() {
         let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
@@ -1104,6 +1303,7 @@ fn show_inner_rows_peek_pointer(
             ui,
             changed,
             force_reborrow,
+            expand_all,
         );
     }
     false
@@ -1363,6 +1563,7 @@ fn show_inner_rows_poke_option(
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
+    expand_all: bool,
 ) -> bool {
     let is_some = unsafe { (option_def.vtable.is_some)(poke.data_mut().as_const()) };
     if !is_some {
@@ -1388,6 +1589,7 @@ fn show_inner_rows_poke_option(
         ui,
         changed,
         force_reborrow,
+        expand_all,
     )
 }
 

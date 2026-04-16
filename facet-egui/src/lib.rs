@@ -18,5 +18,7 @@ facet::define_attr_grammar! {
         Readonly,
         /// Rename the field or type in the UI
         Rename(&'static str),
+        /// Expand all sections recursively
+        ExpandAll,
     }
 }
