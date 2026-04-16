@@ -53,6 +53,7 @@ fn shape_display_name(shape: &facet::Shape) -> &str {
 #[derive(Deref, DeriveDerefMut)]
 pub struct FacetProbe<'mem, 'facet> {
     header: Option<WidgetText>,
+    id: Option<Id>,
     read_only: bool,
     /// SAFETY: if used, there is a high chance what you do is unsound.
     ///
@@ -85,6 +86,15 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         self
     }
 
+    /// Set a stable egui id source for this probe.
+    ///
+    /// Use this when the probe can move in the UI hierarchy (e.g. draggable tabs),
+    /// so collapse/expand state remains stable.
+    pub fn with_id_source(mut self, id_source: impl std::hash::Hash) -> Self {
+        self.id = Some(Id::new(id_source));
+        self
+    }
+
     /// # Safety
     ///
     /// If used, there is a high chance what you do is unsound.
@@ -103,6 +113,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn new_peek(value: Peek<'mem, 'facet>) -> Self {
         Self {
             header: None,
+            id: None,
             read_only: true,
             force_reborrow: false,
             inner: MaybeMut::Not(value),
@@ -112,6 +123,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn new_poke(value: Poke<'mem, 'facet>) -> Self {
         Self {
             header: None,
+            id: None,
             read_only: false,
             force_reborrow: false,
             inner: MaybeMut::Mut(value),
@@ -129,6 +141,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         };
         Self {
             header: None,
+            id: None,
             read_only: false,
             force_reborrow: false,
             inner,
@@ -177,19 +190,21 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         };
 
         let maybe_mut = guard.deref_mut();
-        // Use the data pointer as a stable ID salt so that the probe's
-        // collapse/expand state doesn't depend on its position in the UI tree.
-        let id_salt = maybe_mut.as_peek().data().as_byte_ptr() as usize;
+        // Anchor persistent widget state to a probe root id that does not depend
+        // on current Ui ancestry, so tab moves don't reset collapsed sections.
+        let ptr_salt = maybe_mut.as_peek().data().as_byte_ptr() as usize;
+        let probe_id = self
+            .id
+            .unwrap_or_else(|| Id::new(("facet_egui::probe", ptr_salt)));
         let mut r = ui
-            .push_id(id_salt, |ui| {
+            .push_id(probe_id, |ui| {
                 let child_ui = &mut ui.new_child(
                     UiBuilder::new()
                         .max_rect(ui.max_rect())
                         .layout(Layout::top_down(Align::Min)),
                 );
-                let id = child_ui.id();
 
-                let mut layout = ProbeLayout::load(child_ui.ctx(), id);
+                let mut layout = ProbeLayout::load(child_ui.ctx(), probe_id.with("layout"));
 
                 if let Some(label) = self.header {
                     // Show with a top-level header (like Probe::new(x).with_header("name"))
@@ -199,7 +214,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         &mut layout,
                         0,
                         child_ui,
-                        id,
+                        probe_id.with("root"),
                         &mut changed,
                         self.force_reborrow,
                     );
@@ -211,7 +226,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                             &mut layout,
                             0,
                             child_ui,
-                            id,
+                            probe_id.with("root"),
                             &mut changed,
                             self.force_reborrow,
                         );
@@ -227,7 +242,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         &mut layout,
                         0,
                         child_ui,
-                        id,
+                        probe_id.with("root"),
                         &mut changed,
                         self.force_reborrow,
                     );
@@ -301,11 +316,10 @@ fn show_header(
     layout: &mut ProbeLayout,
     indent: usize,
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + Copy,
+    id: Id,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> ProbeHeader {
-    let id = ui.make_persistent_id(id_salt);
     let mut header = ProbeHeader::load(ui.ctx(), id);
 
     ui.horizontal(|ui| {
@@ -334,7 +348,7 @@ fn show_body(
     layout: &mut ProbeLayout,
     indent: usize,
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + Copy,
+    id: Id,
     changed: &mut bool,
     force_reborrow: bool,
 ) {
@@ -348,7 +362,7 @@ fn show_body(
         UiBuilder::new()
             .max_rect(table_rect)
             .layout(Layout::top_down(Align::Min))
-            .id_salt(id_salt),
+            .id_salt(id.with("body")),
     );
     table_ui.set_clip_rect(
         ui.clip_rect()
@@ -359,6 +373,7 @@ fn show_body(
         value,
         layout,
         indent + 1,
+        id,
         &mut table_ui,
         changed,
         force_reborrow,
@@ -378,7 +393,7 @@ fn show_body_direct(
     layout: &mut ProbeLayout,
     indent: usize,
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + Copy,
+    id: Id,
     changed: &mut bool,
     force_reborrow: bool,
 ) {
@@ -390,7 +405,7 @@ fn show_body_direct(
         UiBuilder::new()
             .max_rect(table_rect)
             .layout(Layout::top_down(Align::Min))
-            .id_salt(id_salt),
+            .id_salt(id.with("body")),
     );
     table_ui.set_clip_rect(
         ui.clip_rect()
@@ -401,6 +416,7 @@ fn show_body_direct(
         value,
         layout,
         indent + 1,
+        id,
         &mut table_ui,
         changed,
         force_reborrow,
@@ -416,16 +432,17 @@ fn show_inner_rows(
     value: &mut MaybeMut<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     match value {
         MaybeMut::Mut(poke) => {
-            show_inner_rows_poke(poke, layout, indent, ui, changed, force_reborrow)
+            show_inner_rows_poke(poke, layout, indent, id, ui, changed, force_reborrow)
         }
         MaybeMut::Not(peek) => {
-            show_inner_rows_peek(*peek, layout, indent, ui, changed, force_reborrow)
+            show_inner_rows_peek(*peek, layout, indent, id, ui, changed, force_reborrow)
         }
     }
 }
@@ -448,6 +465,7 @@ fn show_inner_rows_poke(
     poke: &mut Poke<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -460,6 +478,7 @@ fn show_inner_rows_poke(
             option_def,
             layout,
             indent,
+            id,
             ui,
             changed,
             force_reborrow,
@@ -479,6 +498,7 @@ fn show_inner_rows_poke(
                     poke.as_peek(),
                     layout,
                     indent,
+                    id,
                     ui,
                     changed,
                     force_reborrow,
@@ -486,9 +506,17 @@ fn show_inner_rows_poke(
             }
         };
         if let Ok(enu) = enu_poke.into_enum() {
-            return show_inner_rows_poke_enum(enu, layout, indent, ui, changed, force_reborrow);
+            return show_inner_rows_poke_enum(enu, layout, indent, id, ui, changed, force_reborrow);
         }
-        return show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed, force_reborrow);
+        return show_inner_rows_peek(
+            poke.as_peek(),
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+        );
     }
 
     // For structs, reborrow to get mutable field access
@@ -503,6 +531,7 @@ fn show_inner_rows_poke(
                     poke.as_peek(),
                     layout,
                     indent,
+                    id,
                     ui,
                     changed,
                     force_reborrow,
@@ -510,7 +539,15 @@ fn show_inner_rows_poke(
             }
         };
         if let Ok(struc) = reborrow.into_struct() {
-            return show_inner_rows_poke_struct(struc, layout, indent, ui, changed, force_reborrow);
+            return show_inner_rows_poke_struct(
+                struc,
+                layout,
+                indent,
+                id,
+                ui,
+                changed,
+                force_reborrow,
+            );
         }
     }
 
@@ -524,6 +561,7 @@ fn show_inner_rows_poke(
                 poke.as_peek(),
                 layout,
                 indent,
+                id,
                 ui,
                 changed,
                 force_reborrow,
@@ -531,7 +569,7 @@ fn show_inner_rows_poke(
         }
     };
     if let Ok(poke_list) = poke.into_list() {
-        show_inner_rows_poke_list(poke_list, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_poke_list(poke_list, layout, indent, id, ui, changed, force_reborrow)
     } else {
         // restore old poke
         // SAFETY: this is ok because there still is only one access to poke due to the if
@@ -540,7 +578,15 @@ fn show_inner_rows_poke(
         // For list, list, map, tuple, option, pointer — fall through to peek
         ui.weak("fallback");
         ui.weak("fallback");
-        show_inner_rows_peek(poke.as_peek(), layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek(
+            poke.as_peek(),
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+        )
     }
 }
 
@@ -548,6 +594,7 @@ fn show_inner_rows_poke_list(
     mut list: PokeList<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -559,6 +606,7 @@ fn show_inner_rows_poke_list(
     for idx in 0..len {
         let label = format!("[{idx}]");
         if let Some(field_poke) = list.get_mut(idx) {
+            let row_id = id.with(("list", idx));
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
@@ -569,7 +617,7 @@ fn show_inner_rows_poke_list(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -580,7 +628,7 @@ fn show_inner_rows_poke_list(
                     layout,
                     indent,
                     ui,
-                    idx,
+                    row_id,
                     changed,
                     force_reborrow,
                 );
@@ -597,6 +645,7 @@ fn show_inner_rows_poke_struct(
     mut struc: PokeStruct<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -612,14 +661,15 @@ fn show_inner_rows_poke_struct(
             continue;
         }
         if let Ok(field_poke) = struc.field(idx) {
+            let row_id = id.with(("struct", idx));
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
             let child = &mut *guard;
             if field.is_flattened() {
-                ui.push_id(idx, |ui| {
+                ui.push_id(row_id, |ui| {
                     got_inner |=
-                        show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+                        show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
                 });
                 continue;
             }
@@ -631,7 +681,7 @@ fn show_inner_rows_poke_struct(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -642,7 +692,7 @@ fn show_inner_rows_poke_struct(
                     layout,
                     indent,
                     ui,
-                    idx,
+                    row_id,
                     changed,
                     force_reborrow,
                 );
@@ -659,6 +709,7 @@ fn show_inner_rows_poke_enum(
     mut enu: PokeEnum<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -678,14 +729,15 @@ fn show_inner_rows_poke_enum(
             continue;
         }
         if let Ok(Some(field_poke)) = enu.field(idx) {
+            let row_id = id.with(("enum", idx));
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
             let child = &mut *guard;
             if field.is_flattened() {
-                ui.push_id(idx, |ui| {
+                ui.push_id(row_id, |ui| {
                     got_inner |=
-                        show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+                        show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
                 });
                 continue;
             }
@@ -696,7 +748,7 @@ fn show_inner_rows_poke_enum(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -707,7 +759,7 @@ fn show_inner_rows_poke_enum(
                     layout,
                     indent,
                     ui,
-                    idx,
+                    row_id,
                     changed,
                     force_reborrow,
                 );
@@ -724,24 +776,25 @@ fn show_inner_rows_peek(
     peek: Peek<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     if let Ok(opt) = peek.into_option() {
-        show_inner_rows_peek_option(opt, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_option(opt, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(struc) = peek.into_struct() {
-        show_inner_rows_peek_struct(struc, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_struct(struc, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(enu) = peek.into_enum() {
-        show_inner_rows_peek_enum(enu, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_enum(enu, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(list) = peek.into_list_like() {
-        show_inner_rows_peek_list(list, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_list(list, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(map) = peek.into_map() {
-        show_inner_rows_peek_map(map, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_map(map, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(tuple) = peek.into_tuple() {
-        show_inner_rows_peek_tuple(tuple, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_tuple(tuple, layout, indent, id, ui, changed, force_reborrow)
     } else if let Ok(ptr) = peek.into_pointer() {
-        show_inner_rows_peek_pointer(ptr, layout, indent, ui, changed, force_reborrow)
+        show_inner_rows_peek_pointer(ptr, layout, indent, id, ui, changed, force_reborrow)
     } else {
         false
     }
@@ -751,12 +804,14 @@ fn show_inner_rows_peek_struct(
     struc: PeekStruct<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in struc.fields().enumerate() {
+        let row_id = id.with(("struct", idx));
         if has_egui_skip(field.attributes) {
             continue;
         }
@@ -765,8 +820,9 @@ fn show_inner_rows_peek_struct(
         };
         let child = &mut *guard;
         if field.is_flattened() {
-            ui.push_id(idx, |ui| {
-                got_inner |= show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+            ui.push_id(row_id, |ui| {
+                got_inner |=
+                    show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
             });
             continue;
         }
@@ -778,7 +834,7 @@ fn show_inner_rows_peek_struct(
             layout,
             indent,
             ui,
-            idx,
+            row_id,
             changed,
             force_reborrow,
         );
@@ -789,7 +845,7 @@ fn show_inner_rows_peek_struct(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -805,12 +861,14 @@ fn show_inner_rows_peek_enum(
     enu: PeekEnum<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (field, value)) in enu.fields().enumerate() {
+        let row_id = id.with(("enum", idx));
         if has_egui_skip(field.attributes) {
             continue;
         }
@@ -819,8 +877,9 @@ fn show_inner_rows_peek_enum(
         };
         let child = &mut *guard;
         if field.is_flattened() {
-            ui.push_id(idx, |ui| {
-                got_inner |= show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+            ui.push_id(row_id, |ui| {
+                got_inner |=
+                    show_inner_rows(child, layout, indent, row_id, ui, changed, force_reborrow);
             });
             continue;
         }
@@ -832,7 +891,7 @@ fn show_inner_rows_peek_enum(
             layout,
             indent,
             ui,
-            idx,
+            row_id,
             changed,
             force_reborrow,
         );
@@ -843,7 +902,7 @@ fn show_inner_rows_peek_enum(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -859,12 +918,14 @@ fn show_inner_rows_peek_list(
     list: PeekListLike<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, item) in list.iter().enumerate() {
+        let row_id = id.with(("list", idx));
         got_inner = true;
         let label = format!("[{idx}]");
         let Some(mut guard) = lock_child(MaybeMut::Not(item)) else {
@@ -877,7 +938,7 @@ fn show_inner_rows_peek_list(
             layout,
             indent,
             ui,
-            idx,
+            row_id,
             changed,
             force_reborrow,
         );
@@ -888,7 +949,7 @@ fn show_inner_rows_peek_list(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -904,12 +965,14 @@ fn show_inner_rows_peek_map(
     map: PeekMap<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (key, value)) in map.iter().enumerate() {
+        let row_id = id.with(("map", idx));
         got_inner = true;
         let label = format!("{}", key);
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
@@ -922,7 +985,7 @@ fn show_inner_rows_peek_map(
             layout,
             indent,
             ui,
-            idx,
+            row_id,
             changed,
             force_reborrow,
         );
@@ -933,7 +996,7 @@ fn show_inner_rows_peek_map(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -949,6 +1012,7 @@ fn show_inner_rows_peek_option(
     opt: PeekOption<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -958,7 +1022,15 @@ fn show_inner_rows_peek_option(
             return false;
         };
         let child = &mut *guard;
-        return show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+        return show_inner_rows(
+            child,
+            layout,
+            indent,
+            id.with("option"),
+            ui,
+            changed,
+            force_reborrow,
+        );
     }
     false
 }
@@ -967,12 +1039,14 @@ fn show_inner_rows_peek_tuple(
     tuple: PeekTuple<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
 ) -> bool {
     let mut got_inner = false;
     for (idx, (_field, value)) in tuple.fields().enumerate() {
+        let row_id = id.with(("tuple", idx));
         got_inner = true;
         let label = format!("[{idx}]");
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
@@ -985,7 +1059,7 @@ fn show_inner_rows_peek_tuple(
             layout,
             indent,
             ui,
-            idx,
+            row_id,
             changed,
             force_reborrow,
         );
@@ -996,7 +1070,7 @@ fn show_inner_rows_peek_tuple(
                 layout,
                 indent,
                 ui,
-                idx,
+                row_id,
                 changed,
                 force_reborrow,
             );
@@ -1012,6 +1086,7 @@ fn show_inner_rows_peek_pointer(
     ptr: PeekPointer<'_, '_>,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -1021,7 +1096,15 @@ fn show_inner_rows_peek_pointer(
             return false;
         };
         let child = &mut *guard;
-        return show_inner_rows(child, layout, indent, ui, changed, force_reborrow);
+        return show_inner_rows(
+            child,
+            layout,
+            indent,
+            id.with("ptr"),
+            ui,
+            changed,
+            force_reborrow,
+        );
     }
     false
 }
@@ -1276,6 +1359,7 @@ fn show_inner_rows_poke_option(
     option_def: OptionDef,
     layout: &mut ProbeLayout,
     indent: usize,
+    id: Id,
     ui: &mut Ui,
     changed: &mut bool,
     force_reborrow: bool,
@@ -1296,7 +1380,15 @@ fn show_inner_rows_poke_option(
         unsafe { Poke::from_raw_parts(facet::PtrMut::new(inner_ptr as *mut u8), option_def.t()) };
 
     let mut child = MaybeMut::Mut(inner_poke);
-    show_inner_rows(&mut child, layout, indent, ui, changed, force_reborrow)
+    show_inner_rows(
+        &mut child,
+        layout,
+        indent,
+        id.with("option"),
+        ui,
+        changed,
+        force_reborrow,
+    )
 }
 
 /// Show inline widget for a mutable enum: ComboBox to select variant.
