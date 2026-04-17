@@ -20,5 +20,7 @@ facet::define_attr_grammar! {
         Rename(&'static str),
         /// Expand all sections recursively
         ExpandAll,
+        /// Displays the underlying type using its [`Display`](core::fmt::Display) implementation.
+        AsDisplay,
     }
 }

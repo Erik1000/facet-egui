@@ -24,6 +24,14 @@ fn has_egui_skip(attributes: &[facet::Attr]) -> bool {
         .any(|a| matches!(a, Attr::Skip))
 }
 
+/// Returns `true` if the given attributes slice contains `Attr::AsDisplay`.
+fn has_egui_as_display(attributes: &[facet::Attr]) -> bool {
+    attributes
+        .iter()
+        .filter_map(|a| a.get_as::<crate::Attr>())
+        .any(|a| matches!(a, Attr::AsDisplay))
+}
+
 /// Returns the `Attr::Rename` value from the attributes, if present.
 fn egui_rename(attributes: &[facet::Attr]) -> Option<&'static str> {
     attributes
@@ -47,6 +55,10 @@ fn field_display_name(field: &facet::Field) -> String {
 /// otherwise falls back to `effective_name()`.
 fn shape_display_name(shape: &facet::Shape) -> &str {
     egui_rename(shape.attributes).unwrap_or_else(|| shape.effective_name())
+}
+
+fn should_render_as_display(shape: &facet::Shape, attributes: &[facet::Attr]) -> bool {
+    has_egui_as_display(attributes) || has_egui_as_display(shape.attributes)
 }
 
 /// The container that stores a [`MaybeMut`] of the type `T` that should be shown
@@ -228,6 +240,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                 );
 
                 let mut layout = ProbeLayout::load(child_ui.ctx(), probe_id.with("layout"));
+                let root_as_display = should_render_as_display(maybe_mut.shape(), &[]);
 
                 if let Some(label) = self.header {
                     // Show with a top-level header (like Probe::new(x).with_header("name"))
@@ -241,9 +254,10 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         &mut changed,
                         self.force_reborrow,
                         expand_all,
+                        root_as_display,
                     );
 
-                    if header.openness > 0.0 {
+                    if header.openness > 0.0 && !root_as_display {
                         show_body(
                             maybe_mut,
                             &mut header,
@@ -254,9 +268,8 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                             &mut changed,
                             self.force_reborrow,
                             expand_all,
+                            root_as_display,
                         );
-                    } else {
-                        header.set_has_inner(has_inner(maybe_mut));
                     }
 
                     header.store(child_ui.ctx());
@@ -271,6 +284,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                         &mut changed,
                         self.force_reborrow,
                         expand_all,
+                        root_as_display,
                     );
                 }
 
@@ -346,10 +360,16 @@ fn show_header(
     changed: &mut bool,
     force_reborrow: bool,
     expand_all: bool,
+    as_display: bool,
 ) -> ProbeHeader {
     let mut header = ProbeHeader::load(ui.ctx(), id);
+    let row_has_inner = !as_display && has_inner(value);
+    header.set_has_inner(row_has_inner);
+    if !row_has_inner {
+        header.set_open(false);
+    }
 
-    if expand_all && header.has_inner() {
+    if expand_all && row_has_inner {
         header.set_open(true);
     }
 
@@ -362,7 +382,7 @@ fn show_header(
         });
 
         layout.inner_value_ui(id.with("value"), ui, |ui| {
-            *changed |= show_inline_value(value, ui, id, force_reborrow)
+            *changed |= show_inline_value(value, ui, id, force_reborrow, as_display)
                 .labelled_by(label_response.id)
                 .changed();
         });
@@ -383,7 +403,14 @@ fn show_body(
     changed: &mut bool,
     force_reborrow: bool,
     expand_all: bool,
+    as_display: bool,
 ) {
+    if as_display {
+        header.set_has_inner(false);
+        header.set_open(false);
+        return;
+    }
+
     let cursor = ui.cursor();
     let table_rect = egui::Rect::from_min_max(
         egui::pos2(cursor.min.x, cursor.min.y - header.body_shift()),
@@ -430,7 +457,13 @@ fn show_body_direct(
     changed: &mut bool,
     force_reborrow: bool,
     expand_all: bool,
+    as_display: bool,
 ) {
+    if as_display {
+        *changed |= show_inline_value(value, ui, id, force_reborrow, true).changed();
+        return;
+    }
+
     let cursor = ui.cursor();
     let table_rect =
         egui::Rect::from_min_max(egui::pos2(cursor.min.x, cursor.min.y), ui.max_rect().max);
@@ -688,6 +721,7 @@ fn show_inner_rows_poke_list(
                 continue;
             };
             let child = &mut *guard;
+            let as_display = should_render_as_display(child.shape(), &[]);
             let mut header = show_header(
                 &label,
                 child,
@@ -698,8 +732,9 @@ fn show_inner_rows_poke_list(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-            if header.openness > 0.0 {
+            if header.openness > 0.0 && !as_display {
                 show_body(
                     child,
                     &mut header,
@@ -710,9 +745,8 @@ fn show_inner_rows_poke_list(
                     changed,
                     force_reborrow,
                     expand_all,
+                    as_display,
                 );
-            } else {
-                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -763,6 +797,7 @@ fn show_inner_rows_poke_struct(
             }
             got_inner = true;
             let field_name = field_display_name(field);
+            let as_display = should_render_as_display(child.shape(), field.attributes);
             let mut header = show_header(
                 &field_name,
                 child,
@@ -773,8 +808,9 @@ fn show_inner_rows_poke_struct(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-            if header.openness > 0.0 {
+            if header.openness > 0.0 && !as_display {
                 show_body(
                     child,
                     &mut header,
@@ -785,9 +821,8 @@ fn show_inner_rows_poke_struct(
                     changed,
                     force_reborrow,
                     expand_all,
+                    as_display,
                 );
-            } else {
-                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -841,6 +876,7 @@ fn show_inner_rows_poke_enum(
                 continue;
             }
             let field_name = field_display_name(field);
+            let as_display = should_render_as_display(child.shape(), field.attributes);
             let mut header = show_header(
                 &field_name,
                 child,
@@ -851,8 +887,9 @@ fn show_inner_rows_poke_enum(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-            if header.openness > 0.0 {
+            if header.openness > 0.0 && !as_display {
                 show_body(
                     child,
                     &mut header,
@@ -863,9 +900,8 @@ fn show_inner_rows_poke_enum(
                     changed,
                     force_reborrow,
                     expand_all,
+                    as_display,
                 );
-            } else {
-                header.set_has_inner(has_inner(child));
             }
             header.store(ui.ctx());
         }
@@ -1002,6 +1038,7 @@ fn show_inner_rows_peek_struct(
         }
         got_inner = true;
         let field_name = field_display_name(&field);
+        let as_display = should_render_as_display(child.shape(), field.attributes);
         let mut header = show_header(
             &field_name,
             child,
@@ -1012,8 +1049,9 @@ fn show_inner_rows_peek_struct(
             changed,
             force_reborrow,
             expand_all,
+            as_display,
         );
-        if header.openness > 0.0 {
+        if header.openness > 0.0 && !as_display {
             show_body(
                 child,
                 &mut header,
@@ -1024,9 +1062,8 @@ fn show_inner_rows_peek_struct(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-        } else {
-            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -1070,6 +1107,7 @@ fn show_inner_rows_peek_enum(
         }
         got_inner = true;
         let field_name = field_display_name(&field);
+        let as_display = should_render_as_display(child.shape(), field.attributes);
         let mut header = show_header(
             &field_name,
             child,
@@ -1080,8 +1118,9 @@ fn show_inner_rows_peek_enum(
             changed,
             force_reborrow,
             expand_all,
+            as_display,
         );
-        if header.openness > 0.0 {
+        if header.openness > 0.0 && !as_display {
             show_body(
                 child,
                 &mut header,
@@ -1092,9 +1131,8 @@ fn show_inner_rows_peek_enum(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-        } else {
-            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -1120,6 +1158,7 @@ fn show_inner_rows_peek_list(
             continue;
         };
         let child = &mut *guard;
+        let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
             child,
@@ -1130,8 +1169,9 @@ fn show_inner_rows_peek_list(
             changed,
             force_reborrow,
             expand_all,
+            as_display,
         );
-        if header.openness > 0.0 {
+        if header.openness > 0.0 && !as_display {
             show_body(
                 child,
                 &mut header,
@@ -1142,9 +1182,8 @@ fn show_inner_rows_peek_list(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-        } else {
-            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -1170,6 +1209,7 @@ fn show_inner_rows_peek_map(
             continue;
         };
         let child = &mut *guard;
+        let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
             child,
@@ -1180,8 +1220,9 @@ fn show_inner_rows_peek_map(
             changed,
             force_reborrow,
             expand_all,
+            as_display,
         );
-        if header.openness > 0.0 {
+        if header.openness > 0.0 && !as_display {
             show_body(
                 child,
                 &mut header,
@@ -1192,9 +1233,8 @@ fn show_inner_rows_peek_map(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-        } else {
-            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -1249,6 +1289,7 @@ fn show_inner_rows_peek_tuple(
             continue;
         };
         let child = &mut *guard;
+        let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
             child,
@@ -1259,8 +1300,9 @@ fn show_inner_rows_peek_tuple(
             changed,
             force_reborrow,
             expand_all,
+            as_display,
         );
-        if header.openness > 0.0 {
+        if header.openness > 0.0 && !as_display {
             show_body(
                 child,
                 &mut header,
@@ -1271,9 +1313,8 @@ fn show_inner_rows_peek_tuple(
                 changed,
                 force_reborrow,
                 expand_all,
+                as_display,
             );
-        } else {
-            header.set_has_inner(has_inner(child));
         }
         header.store(ui.ctx());
     }
@@ -1319,10 +1360,11 @@ fn show_inline_value(
     ui: &mut Ui,
     id: Id,
     force_reborrow: bool,
+    as_display: bool,
 ) -> Response {
     match value {
-        MaybeMut::Mut(poke) => show_inline_poke(poke, ui, id, force_reborrow),
-        MaybeMut::Not(peek) => show_inline_peek(*peek, ui, id),
+        MaybeMut::Mut(poke) => show_inline_poke(poke, ui, id, force_reborrow, as_display),
+        MaybeMut::Not(peek) => show_inline_peek(*peek, ui, id, as_display),
     }
 }
 
@@ -1332,7 +1374,12 @@ fn show_inline_poke(
     ui: &mut Ui,
     id: Id,
     force_reborrow: bool,
+    as_display: bool,
 ) -> Response {
+    if as_display || should_render_as_display(poke.shape(), &[]) {
+        return ui.label(format!("{}", poke.as_peek()));
+    }
+
     if let Some(scalar_type) = poke.as_peek().scalar_type() {
         return show_inline_poke_scalar(poke, scalar_type, ui);
     }
@@ -1361,7 +1408,7 @@ fn show_inline_poke(
     if let Ok(ptr) = poke.as_peek().into_pointer()
         && let Some(inner) = ptr.borrow_inner()
     {
-        return show_inline_peek(inner, ui, id);
+        return show_inline_peek(inner, ui, id, false);
     }
 
     ui.weak(shape_display_name(poke.shape()))
@@ -1509,7 +1556,7 @@ fn show_inline_poke_option(
                 let mut inner_poke = unsafe {
                     Poke::from_raw_parts(facet::PtrMut::new(inner_ptr as *mut u8), option_def.t())
                 };
-                show_inline_poke(&mut inner_poke, ui, id.with("some"), force_reborrow);
+                show_inline_poke(&mut inner_poke, ui, id.with("some"), force_reborrow, false);
             }
         }
     });
@@ -1824,8 +1871,11 @@ fn show_inline_poke_scalar(
     )
 }
 
-/// Show inline widget for a read-only value.
-fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
+fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id, as_display: bool) -> Response {
+    if as_display || should_render_as_display(peek.shape(), &[]) {
+        return ui.label(format!("{}", peek));
+    }
+
     if let Some(scalar_type) = peek.scalar_type() {
         return show_inline_peek_scalar(peek, scalar_type, ui);
     }
@@ -1856,7 +1906,7 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id) -> Response {
     if let Ok(ptr) = peek.into_pointer()
         && let Some(inner) = ptr.borrow_inner()
     {
-        return show_inline_peek(inner, ui, id.with("ptr"));
+        return show_inline_peek(inner, ui, id.with("ptr"), false);
     }
 
     ui.weak(shape_display_name(peek.shape()))
@@ -1913,7 +1963,7 @@ fn show_inline_peek_option(opt: PeekOption<'_, '_>, ui: &mut Ui, id: Id) -> Resp
         let _ = ui.selectable_label(!is_some, "None");
         let _ = ui.selectable_label(is_some, "Some");
         if let Some(inner) = opt.value() {
-            show_inline_peek(inner, ui, id.with("some"));
+            show_inline_peek(inner, ui, id.with("some"), false);
         }
     })
     .response
