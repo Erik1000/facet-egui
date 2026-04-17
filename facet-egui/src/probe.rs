@@ -28,8 +28,7 @@ fn has_egui_skip(attributes: &[facet::Attr]) -> bool {
 fn has_egui_as_display(attributes: &[facet::Attr]) -> bool {
     attributes
         .iter()
-        .filter_map(|a| a.get_as::<crate::Attr>())
-        .any(|a| matches!(a, Attr::AsDisplay))
+        .any(|a| matches!((a.ns, a.key), (Some("egui"), "as_display")))
 }
 
 /// Returns the `Attr::Rename` value from the attributes, if present.

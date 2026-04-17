@@ -1,8 +1,11 @@
+use std::fmt::Display;
+
 use egui_probe::{EguiProbe, angle};
 use facet::Facet;
 
 #[derive(EguiProbe, Facet, Default)]
 pub struct DemoValue {
+    just_display: OnlyDisplay,
     boolean: bool,
 
     #[egui_probe(toggle_switch)]
@@ -50,6 +53,16 @@ pub enum DemoEnumInlined {
     Baz {
         name: u32,
     },
+}
+
+#[derive(Debug, Facet, Default, EguiProbe)]
+#[facet(facet_egui::as_display)]
+pub struct OnlyDisplay;
+
+impl Display for OnlyDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "im just a display implementation")
+    }
 }
 
 #[derive(Debug, EguiProbe, Facet, Default)]
