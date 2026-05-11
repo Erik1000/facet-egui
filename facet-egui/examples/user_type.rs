@@ -2,6 +2,7 @@ use eframe::egui;
 use facet::Facet;
 use facet_egui::FacetProbe;
 use std::{
+    collections::BTreeMap,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -32,6 +33,7 @@ struct MetaInfo {
 
 #[derive(Debug, Facet, Default)]
 pub struct User {
+    map: BTreeMap<String, User>,
     name: Arc<RwLock<String>>,
     role: Role,
     reports_to: Vec<User>,

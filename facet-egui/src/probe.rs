@@ -4,7 +4,7 @@ use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
-use facet::{Def, Facet, ListDef, OptionDef, ScalarType, Type, UserType};
+use facet::{Def, Facet, ListDef, MapDef, OptionDef, ScalarType, Type, UserType};
 use facet_reflect::{
     HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekStruct,
     PeekTuple, Poke, PokeEnum, PokeList, PokeStruct,
@@ -648,6 +648,21 @@ fn show_inner_rows_poke(
         }
     }
 
+    // Maps: PokeMap doesn't expose mutable values, so render entries via the
+    // read-only peek path (the inline `+` button is shown by `show_inline_poke_map`).
+    if matches!(poke.shape().def, Def::Map(_)) {
+        return show_inner_rows_peek(
+            poke.as_peek(),
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        );
+    }
+
     let data_mut = poke.data_mut();
     let shape = poke.shape();
     let poke = match poke.try_reborrow() {
@@ -682,9 +697,7 @@ fn show_inner_rows_poke(
         // SAFETY: this is ok because there still is only one access to poke due to the if
         // branch not being reached
         let poke = unsafe { Poke::from_raw_parts(data_mut, shape) };
-        // For list, list, map, tuple, option, pointer — fall through to peek
-        ui.weak("fallback");
-        ui.weak("fallback");
+        // For tuple, option, pointer — fall through to peek
         show_inner_rows_peek(
             poke.as_peek(),
             layout,
@@ -1398,8 +1411,8 @@ fn show_inline_poke(
     if let Def::List(list_def) = poke.shape().def {
         return show_inline_poke_list(poke, list_def, ui);
     }
-    if let Ok(map) = poke.as_peek().into_map() {
-        return ui.weak(format!("[{}]", map.len()));
+    if let Def::Map(map_def) = poke.shape().def {
+        return show_inline_poke_map(poke, map_def, ui);
     }
     if let Ok(tuple) = poke.as_peek().into_tuple() {
         return ui.weak(format!("({})", tuple.len()));
@@ -1423,7 +1436,7 @@ fn show_inline_poke_list(poke: &mut Poke<'_, '_>, list_def: ListDef, ui: &mut Ui
     let item_shape = list_def.t();
     let has_default = item_shape.is_default();
     let has_push = list_def.push().is_some();
-    let has_set_len = list_def.set_len().is_some();
+    let has_pop = list_def.pop().is_some();
 
     let mut changed = false;
     let r = ui.horizontal(|ui| {
@@ -1433,8 +1446,8 @@ fn show_inline_poke_list(poke: &mut Poke<'_, '_>, list_def: ListDef, ui: &mut Ui
             changed |= try_push_default_to_list(poke, list_def);
         }
 
-        if has_set_len && len > 0 && ui.small_button("-").clicked() {
-            changed |= try_pop_from_list(poke, list_def, item_shape);
+        if has_pop && len > 0 && ui.small_button("-").clicked() {
+            changed |= try_pop_from_list(poke);
         }
     });
 
@@ -1445,13 +1458,9 @@ fn show_inline_poke_list(poke: &mut Poke<'_, '_>, list_def: ListDef, ui: &mut Ui
     r
 }
 
-/// Push a default-constructed element to the list using `Partial`.
+/// Push a default-constructed element to the list via `PokeList::push_from_heap`.
 fn try_push_default_to_list(poke: &mut Poke<'_, '_>, list_def: ListDef) -> bool {
     let item_shape = list_def.t();
-    let push_fn = match list_def.push() {
-        Some(f) => f,
-        None => return false,
-    };
 
     // SAFETY: item_shape comes from the ListDef of this poke's shape.
     let partial = match unsafe { Partial::alloc_shape(item_shape) } {
@@ -1467,57 +1476,87 @@ fn try_push_default_to_list(poke: &mut Poke<'_, '_>, list_def: ListDef) -> bool 
         Err(_) => return false,
     };
 
-    // push_fn moves the value out via ptr::read — ownership transfers to the list.
-    // SAFETY: heap_value contains an initialized, aligned value of the correct item type.
-    unsafe {
-        let item_ptr = heap_value.peek().data().as_byte_ptr() as *mut u8;
-        push_fn(poke.data_mut(), facet::PtrMut::new(item_ptr));
-    }
-    // The value has been moved into the list. Prevent HeapValue from dropping
-    // the (now-moved) inner value. This leaks the HeapValue's backing allocation
-    // but is correct per the ListPushFn contract.
-    core::mem::forget(heap_value);
-
-    true
+    let Some(reborrow) = poke.try_reborrow() else {
+        return false;
+    };
+    let Ok(mut list) = reborrow.into_list() else {
+        return false;
+    };
+    list.push_from_heap(heap_value).is_ok()
 }
 
-/// Pop the last element from the list by moving it out, shrinking the Vec,
-/// then dropping the extracted element.
-fn try_pop_from_list(
-    poke: &mut Poke<'_, '_>,
-    list_def: ListDef,
-    item_shape: &'static facet::Shape,
-) -> bool {
-    let set_len_fn = match list_def.set_len() {
-        Some(f) => f,
-        None => return false,
-    };
-    let len_fn = list_def.vtable.len;
-    let get_mut_fn = match list_def.vtable.get_mut {
-        Some(f) => f,
-        None => return false,
-    };
-    // SAFETY: poke points to an initialized, aligned list value (Vec<T>).
-    // len_fn and get_mut_fn come from the same ListDef as the poke's shape.
-    let len = unsafe { len_fn(poke.data_mut().as_const()) };
-    if len == 0 {
+/// Pop the last element from the list via `PokeList::pop`. The returned
+/// `HeapValue` drops the popped element when it goes out of scope.
+fn try_pop_from_list(poke: &mut Poke<'_, '_>) -> bool {
+    let Some(reborrow) = poke.try_reborrow() else {
         return false;
+    };
+    let Ok(mut list) = reborrow.into_list() else {
+        return false;
+    };
+    matches!(list.pop(), Ok(Some(_)))
+}
+
+/// Show inline widget for a mutable map: `[len]` with a `+` button to insert a
+/// default-built (key, value) entry. Map removal is not exposed by `PokeMap`,
+/// so there is no `-` button.
+fn show_inline_poke_map(poke: &mut Poke<'_, '_>, map_def: MapDef, ui: &mut Ui) -> Response {
+    let len = poke.as_peek().into_map().map(|m| m.len()).unwrap_or(0);
+    let key_shape = map_def.k();
+    let value_shape = map_def.v();
+    let can_insert = key_shape.is_default() && value_shape.is_default();
+
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        ui.weak(format!("[{len}]"));
+
+        if can_insert
+            && ui
+                .small_button("+")
+                .on_hover_text("insert default key/value")
+                .clicked()
+        {
+            changed |= try_insert_default_into_map(poke, map_def);
+        }
+    });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
     }
+    r
+}
 
-    // SAFETY: poke.shape() is the list's shape (Vec<T>), which get_mut_fn
-    // uses to compute element size from type_params[0]. Index is in bounds.
-    let Some(last_ptr) = (unsafe { get_mut_fn(poke.data_mut(), len - 1, poke.shape()) }) else {
-        return false;
+/// Insert a (default key, default value) entry into the map via
+/// `PokeMap::insert_from_heap`.
+fn try_insert_default_into_map(poke: &mut Poke<'_, '_>, map_def: MapDef) -> bool {
+    let key = match build_default_heap_value(map_def.k()) {
+        Some(v) => v,
+        None => return false,
+    };
+    let value = match build_default_heap_value(map_def.v()) {
+        Some(v) => v,
+        None => return false,
     };
 
-    // SAFETY: After set_len(len - 1) the Vec no longer considers this slot
-    // occupied, but its backing buffer is still allocated — last_ptr remains
-    // valid. We drop in place, mirroring Vec::pop semantics (shrink length,
-    // then drop the element).
-    unsafe { set_len_fn(poke.data_mut(), len - 1) };
-    unsafe { item_shape.call_drop_in_place(last_ptr) };
+    let Some(reborrow) = poke.try_reborrow() else {
+        return false;
+    };
+    let Ok(mut map) = reborrow.into_map() else {
+        return false;
+    };
+    map.insert_from_heap(key, value).is_ok()
+}
 
-    true
+/// Build a default-constructed `HeapValue` for the given shape, or return
+/// `None` if allocation, defaulting, or building fails.
+fn build_default_heap_value(
+    shape: &'static facet::Shape,
+) -> Option<facet_reflect::HeapValue<'static, true>> {
+    // SAFETY: `shape` is provided by the caller and assumed to be a real, registered shape.
+    let partial = unsafe { Partial::alloc_shape(shape) }.ok()?;
+    let partial = partial.set_default().ok()?;
+    partial.build().ok()
 }
 
 /// Show inline widget for a mutable option: toggle between None and Some.
@@ -1532,15 +1571,12 @@ fn show_inline_poke_option(
 
     let mut changed = false;
     let r = ui.horizontal(|ui| {
-        if ui.selectable_label(!is_some, "None").clicked() && is_some {
-            // Switch from Some to None
-            // SAFETY:
-            // According to facet docs, it should be set to a null pointer to
-            // set it to Option::None
-            // See <https://docs.rs/facet-core/0.44.3/facet_core/type.OptionReplaceWithFn.html>
-            unsafe {
-                (option_def.vtable.replace_with)(poke.data_mut(), std::ptr::null_mut());
-            }
+        if ui.selectable_label(!is_some, "None").clicked()
+            && is_some
+            && let Some(reborrow) = poke.try_reborrow()
+            && let Ok(mut opt) = reborrow.into_option()
+        {
+            opt.set_none();
             changed = true;
         }
         if ui.selectable_label(is_some, "Some").clicked() && !is_some {
@@ -1567,7 +1603,7 @@ fn show_inline_poke_option(
     r
 }
 
-/// Set an Option from None to Some(T::default()) using the OptionVTable.
+/// Set an Option from None to Some(T::default()) via `PokeOption::set_some_from_heap`.
 fn try_set_option_to_some_default(poke: &mut Poke<'_, '_>, option_def: OptionDef) -> bool {
     let inner_shape = option_def.t();
 
@@ -1586,17 +1622,13 @@ fn try_set_option_to_some_default(poke: &mut Poke<'_, '_>, option_def: OptionDef
         Err(_) => return false,
     };
 
-    // Move the default value into the Option via replace_with.
-    // SAFETY: heap_value contains an initialized, aligned value of the correct inner type.
-    // replace_with moves from the pointer (ptr::read), so we must forget the heap_value
-    // to avoid double-free.
-    unsafe {
-        let value_ptr = heap_value.peek().data().as_byte_ptr() as *mut u8;
-        (option_def.vtable.replace_with)(poke.data_mut(), value_ptr);
-    }
-    core::mem::forget(heap_value);
-
-    true
+    let Some(reborrow) = poke.try_reborrow() else {
+        return false;
+    };
+    let Ok(mut opt) = reborrow.into_option() else {
+        return false;
+    };
+    opt.set_some_from_heap(heap_value).is_ok()
 }
 
 /// Show inner rows for a mutable Option. When Some, shows the inner value mutably.
