@@ -4,10 +4,10 @@ use std::{borrow::Cow, ops::DerefMut};
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
-use facet::{Def, Facet, ListDef, MapDef, OptionDef, ScalarType, Type, UserType};
+use facet::{Def, Facet, ListDef, MapDef, OptionDef, ScalarType, SetDef, Type, UserType};
 use facet_reflect::{
-    HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekStruct,
-    PeekTuple, Poke, PokeEnum, PokeList, PokeStruct,
+    HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekSet,
+    PeekStruct, PeekTuple, Poke, PokeEnum, PokeList, PokeStruct,
 };
 
 use crate::{
@@ -643,9 +643,10 @@ fn show_inner_rows_poke(
         }
     }
 
-    // Maps: PokeMap doesn't expose mutable values, so render entries via the
-    // read-only peek path (the inline `+` button is shown by `show_inline_poke_map`).
-    if matches!(poke.shape().def, Def::Map(_)) {
+    // Maps and Sets: PokeMap/PokeSet don't expose mutable values, so render
+    // entries via the read-only peek path (the inline `+` button is shown by
+    // `show_inline_poke_map`/`show_inline_poke_set`).
+    if matches!(poke.shape().def, Def::Map(_) | Def::Set(_)) {
         return show_inner_rows_peek(
             poke.as_peek(),
             layout,
@@ -981,6 +982,17 @@ fn show_inner_rows_peek(
             force_reborrow,
             expand_all,
         )
+    } else if let Ok(set) = peek.into_set() {
+        show_inner_rows_peek_set(
+            set,
+            layout,
+            indent,
+            id,
+            ui,
+            changed,
+            force_reborrow,
+            expand_all,
+        )
     } else if let Ok(tuple) = peek.into_tuple() {
         show_inner_rows_peek_tuple(
             tuple,
@@ -1248,6 +1260,57 @@ fn show_inner_rows_peek_map(
     got_inner
 }
 
+fn show_inner_rows_peek_set(
+    set: PeekSet<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    id: Id,
+    ui: &mut Ui,
+    changed: &mut bool,
+    force_reborrow: bool,
+    expand_all: bool,
+) -> bool {
+    let mut got_inner = false;
+    for (idx, value) in set.iter().enumerate() {
+        let row_id = id.with(("set", idx));
+        got_inner = true;
+        let label = format!("[{idx}]");
+        let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
+            continue;
+        };
+        let child = &mut *guard;
+        let as_display = should_render_as_display(child.shape(), &[]);
+        let mut header = show_header(
+            &label,
+            child,
+            layout,
+            indent,
+            ui,
+            row_id,
+            changed,
+            force_reborrow,
+            expand_all,
+            as_display,
+        );
+        if header.openness > 0.0 && !as_display {
+            show_body(
+                child,
+                &mut header,
+                layout,
+                indent,
+                ui,
+                row_id,
+                changed,
+                force_reborrow,
+                expand_all,
+                as_display,
+            );
+        }
+        header.store(ui.ctx());
+    }
+    got_inner
+}
+
 fn show_inner_rows_peek_option(
     opt: PeekOption<'_, '_>,
     layout: &mut ProbeLayout,
@@ -1409,6 +1472,9 @@ fn show_inline_poke(
     if let Def::Map(map_def) = poke.shape().def {
         return show_inline_poke_map(poke, map_def, ui);
     }
+    if let Def::Set(set_def) = poke.shape().def {
+        return show_inline_poke_set(poke, set_def, ui);
+    }
     if let Ok(tuple) = poke.as_peek().into_tuple() {
         return ui.weak(format!("({})", tuple.len()));
     }
@@ -1541,6 +1607,52 @@ fn try_insert_default_into_map(poke: &mut Poke<'_, '_>, map_def: MapDef) -> bool
         return false;
     };
     map.insert_from_heap(key, value).is_ok()
+}
+
+/// Show inline widget for a mutable set: `[len]` with a `+` button to insert a
+/// default-built element. Set removal is not exposed by `PokeSet`, so there is
+/// no `-` button.
+fn show_inline_poke_set(poke: &mut Poke<'_, '_>, set_def: SetDef, ui: &mut Ui) -> Response {
+    let len = poke.as_peek().into_set().map(|s| s.len()).unwrap_or(0);
+    let elem_shape = set_def.t();
+    let can_insert = elem_shape.is_default();
+
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        ui.weak(format!("[{len}]"));
+
+        if can_insert
+            && ui
+                .small_button("+")
+                .on_hover_text("insert default value")
+                .clicked()
+        {
+            changed |= try_insert_default_into_set(poke, set_def);
+        }
+    });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
+    }
+    r
+}
+
+/// Insert a default-constructed element into the set via
+/// `PokeSet::insert_from_heap`.
+fn try_insert_default_into_set(poke: &mut Poke<'_, '_>, set_def: SetDef) -> bool {
+    let value = match build_default_heap_value(set_def.t()) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let Some(reborrow) = poke.try_reborrow() else {
+        return false;
+    };
+    let Ok(mut set) = reborrow.into_set() else {
+        return false;
+    };
+    set.insert_from_heap(value).is_ok()
 }
 
 /// Build a default-constructed `HeapValue` for the given shape, or return
