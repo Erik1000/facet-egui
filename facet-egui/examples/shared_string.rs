@@ -48,9 +48,8 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx();
         // Left panel
-        egui::SidePanel::left("left_panel").show(ctx, |ui| {
+        egui::Panel::left("left_panel").show_inside(ui, |ui| {
             ui.heading("Left Panel");
             ui.separator();
             let t = &self.shared_string;
@@ -60,7 +59,7 @@ impl eframe::App for App {
         });
 
         // Right panel
-        egui::SidePanel::right("right_panel").show(ctx, |ui| {
+        egui::Panel::right("right_panel").show_inside(ui, |ui| {
             ui.heading("Right Panel");
             ui.separator();
             let t = &self.shared_string;
@@ -70,7 +69,7 @@ impl eframe::App for App {
         });
 
         // Central panel showing the current value
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("Central Panel");
             ui.separator();
 
