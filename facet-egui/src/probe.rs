@@ -12,7 +12,7 @@ use facet_reflect::{
 
 use crate::{
     MaybeMut,
-    layout::{ProbeHeader, ProbeLayout},
+    layout::{ProbeHeader, ProbeLayout, swap_probe_header_state},
     maybe_mut::{Guard, MakeLockErrorKind},
 };
 
@@ -356,7 +356,44 @@ fn show_header(
     expand_all: bool,
     as_display: bool,
 ) -> ProbeHeader {
-    let mut header = ProbeHeader::load(ui.ctx(), id);
+    show_header_with_prefix(
+        |_| {},
+        true,
+        label,
+        value,
+        layout,
+        indent,
+        ui,
+        id,
+        changed,
+        force_reborrow,
+        expand_all,
+        as_display,
+    )
+}
+
+/// Like `show_header` but renders `prefix` widgets in the label column before
+/// the collapse button. Used by the list row to inject ▲/▼ swap buttons.
+#[expect(clippy::too_many_arguments)]
+fn show_header_with_prefix(
+    prefix: impl FnOnce(&mut Ui),
+    animate: bool,
+    label: impl Into<WidgetText>,
+    value: &mut MaybeMut<'_, '_>,
+    layout: &mut ProbeLayout,
+    indent: usize,
+    ui: &mut Ui,
+    id: Id,
+    changed: &mut bool,
+    force_reborrow: bool,
+    expand_all: bool,
+    as_display: bool,
+) -> ProbeHeader {
+    let mut header = if animate {
+        ProbeHeader::load(ui.ctx(), id)
+    } else {
+        ProbeHeader::load_no_animation(ui.ctx(), id)
+    };
     let row_has_inner = !as_display && has_inner(value);
     header.set_has_inner(row_has_inner);
     if !row_has_inner {
@@ -369,6 +406,7 @@ fn show_header(
 
     ui.horizontal(|ui| {
         let label_response = layout.inner_label_ui(indent, id.with("label"), ui, |ui| {
+            prefix(ui);
             if header.has_inner() {
                 header.collapse_button(ui);
             }
@@ -721,6 +759,10 @@ fn show_inner_rows_poke_list(
     if len == 0 {
         return false;
     }
+    let can_swap = list.def().vtable.swap.is_some();
+    // Swaps can't be performed while we hold a `get_mut` borrow on a row, so
+    // collect the requested swap and apply it after the iteration.
+    let mut pending_swap: Option<(usize, usize)> = None;
     for idx in 0..len {
         let label = format!("[{idx}]");
         if let Some(field_poke) = list.get_mut(idx) {
@@ -730,7 +772,29 @@ fn show_inner_rows_poke_list(
             };
             let child = &mut *guard;
             let as_display = should_render_as_display(child.shape(), &[]);
-            let mut header = show_header(
+            let prefix = |ui: &mut Ui| {
+                if !can_swap {
+                    return;
+                }
+                ui.scope(|ui| {
+                    ui.spacing_mut().button_padding = egui::vec2(2.0, 0.0);
+                    let up = ui
+                        .add_enabled(idx > 0, egui::Button::new("⬆").small())
+                        .on_hover_text("move up");
+                    if up.clicked() {
+                        pending_swap = Some((idx, idx - 1));
+                    }
+                    let down = ui
+                        .add_enabled(idx + 1 < len, egui::Button::new("⬇").small())
+                        .on_hover_text("move down");
+                    if down.clicked() {
+                        pending_swap = Some((idx, idx + 1));
+                    }
+                });
+            };
+            let mut header = show_header_with_prefix(
+                prefix,
+                false,
                 &label,
                 child,
                 layout,
@@ -758,6 +822,15 @@ fn show_inner_rows_poke_list(
             }
             header.store(ui.ctx());
         }
+    }
+    if let Some((a, b)) = pending_swap
+        && list.swap(a, b).is_ok()
+    {
+        // Move the persisted collapse state along with the item, otherwise the
+        // (now-different) item that ends up at the original index would inherit
+        // the open/closed state of the moved row.
+        swap_probe_header_state(ui.ctx(), id.with(("list", a)), id.with(("list", b)));
+        *changed = true;
     }
     true
 }

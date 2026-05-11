@@ -32,6 +32,21 @@ impl ProbeHeader {
         }
     }
 
+    pub fn load_no_animation(cx: &egui::Context, id: egui::Id) -> ProbeHeader {
+        let state = cx.data_mut(|d| d.get_temp(id)).unwrap_or(ProbeHeaderState {
+            has_inner: false,
+            open: false,
+            body_height: 0.0,
+        });
+        let openness = if state.open { 1.0 } else { 0.0 };
+        ProbeHeader {
+            id,
+            state,
+            dirty: false,
+            openness,
+        }
+    }
+
     pub fn store(self, cx: &egui::Context) {
         if self.dirty {
             cx.data_mut(|d| d.insert_temp(self.id, self.state));
@@ -83,6 +98,35 @@ impl ProbeHeader {
         egui::collapsing_header::paint_default_icon(ui, self.openness, &response);
         response
     }
+}
+
+/// Swap the persisted `ProbeHeader` state between two ids. Used when reordering
+/// list items so the open/closed state follows the moved item rather than the
+/// index slot.
+pub(crate) fn swap_probe_header_state(cx: &egui::Context, a: egui::Id, b: egui::Id) {
+    if a == b {
+        return;
+    }
+    cx.data_mut(|d| {
+        let sa = d.get_temp::<ProbeHeaderState>(a);
+        let sb = d.get_temp::<ProbeHeaderState>(b);
+        match (sa, sb) {
+            (Some(sa), Some(sb)) => {
+                d.insert_temp(a, sb);
+                d.insert_temp(b, sa);
+            }
+            (Some(sa), None) => {
+                d.remove::<ProbeHeaderState>(a);
+                d.insert_temp(b, sa);
+            }
+            (None, Some(sb)) => {
+                d.insert_temp(a, sb);
+                d.remove::<ProbeHeaderState>(b);
+            }
+            (None, None) => {}
+        }
+    });
+    cx.request_repaint();
 }
 
 // -- ProbeLayout: two-column label/value layout, ported from egui-probe --
