@@ -11,7 +11,7 @@ use facet_reflect::{
 };
 
 use crate::{
-    Attr, MaybeMut,
+    MaybeMut,
     layout::{ProbeHeader, ProbeLayout},
     maybe_mut::{Guard, MakeLockErrorKind},
 };
@@ -20,8 +20,7 @@ use crate::{
 fn has_egui_skip(attributes: &[facet::Attr]) -> bool {
     attributes
         .iter()
-        .filter_map(|a| a.get_as::<crate::Attr>())
-        .any(|a| matches!(a, Attr::Skip))
+        .any(|a| matches!((a.ns, a.key), (Some("egui"), "skip")))
 }
 
 /// Returns `true` if the given attributes slice contains `Attr::AsDisplay`.
@@ -33,13 +32,13 @@ fn has_egui_as_display(attributes: &[facet::Attr]) -> bool {
 
 /// Returns the `Attr::Rename` value from the attributes, if present.
 fn egui_rename(attributes: &[facet::Attr]) -> Option<&'static str> {
-    attributes
-        .iter()
-        .filter_map(|a| a.get_as::<crate::Attr>())
-        .find_map(|a| match a {
-            Attr::Rename(name) => Some(*name),
-            _ => None,
-        })
+    attributes.iter().find_map(|a| {
+        if matches!((a.ns, a.key), (Some("egui"), "rename")) {
+            a.get_as::<&'static str>().copied()
+        } else {
+            None
+        }
+    })
 }
 
 /// Returns the display name for a field: uses `egui::rename` if present,
@@ -183,21 +182,17 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
 
         let mut changed = false;
 
-        let mut attributes = self
-            .shape()
-            .attributes
+        let shape_attrs = self.shape().attributes;
+        let readonly = shape_attrs
             .iter()
-            .filter_map(|x| x.get_as::<crate::Attr>());
-        let readonly = attributes.any(|x| matches!(x, Attr::Readonly)) || self.read_only;
+            .any(|a| matches!((a.ns, a.key), (Some("egui"), "readonly")))
+            || self.read_only;
 
         // Check for expand_all attribute (or use self.expand_all)
         let expand_all = self.expand_all
-            || self
-                .shape()
-                .attributes
+            || shape_attrs
                 .iter()
-                .filter_map(|x| x.get_as::<crate::Attr>())
-                .any(|x| matches!(x, Attr::ExpandAll));
+                .any(|a| matches!((a.ns, a.key), (Some("egui"), "expand_all")));
 
         let mut guard: Guard<'lock, 'facet> = if readonly {
             let Ok(read) = self.inner.read() else {
