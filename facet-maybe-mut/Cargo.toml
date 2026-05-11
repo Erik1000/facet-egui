@@ -11,8 +11,8 @@ categories = ["concurrency"]
 keywords = ["facet", "reflections", "rwlock", "mutex"]
 
 [dependencies]
-facet = { version = "0.44", default-features = false, features = ["alloc"] }
-facet-reflect = { version = "0.44", default-features = false, features = [
+facet = { version = "0.46", default-features = false, features = ["alloc"] }
+facet-reflect = { version = "0.46", default-features = false, features = [
     "alloc",
 ] }
 
@@ -25,4 +25,4 @@ derive_more = { version = "2.1", default-features = false, features = [
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
-facet-testhelpers = "0.44.3"
+facet-testhelpers = "0.46"

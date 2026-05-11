@@ -61,11 +61,9 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Left panel
-
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Central panel showing the current value
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui.ctx(), |ui| {
             ui.heading("Central Panel");
             ui.separator();
             ui.label("Value:");

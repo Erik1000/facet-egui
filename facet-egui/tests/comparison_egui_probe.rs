@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Grid, Vec2};
+use egui::{Grid, Ui, Vec2};
 use egui_probe::Probe;
 use facet_egui::FacetProbe;
 
@@ -25,7 +25,8 @@ struct App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Central Panel");
             ui.separator();

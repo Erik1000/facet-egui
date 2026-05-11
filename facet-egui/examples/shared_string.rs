@@ -1,4 +1,5 @@
 use eframe::egui;
+use egui::Ui;
 use facet::Facet;
 use facet_egui::FacetProbe;
 use std::{
@@ -46,7 +47,8 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx();
         // Left panel
         egui::SidePanel::left("left_panel").show(ctx, |ui| {
             ui.heading("Left Panel");

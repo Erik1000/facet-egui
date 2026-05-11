@@ -22,9 +22,9 @@ egui = ["dep:egui"]
 [dependencies]
 facet-maybe-mut.workspace = true
 
-egui = { version = "0.33.3", default-features = false, optional = true }
-facet = { version = "0.44", default-features = false, features = ["alloc"] }
-facet-reflect = { version = "0.44", default-features = false, features = [
+egui = { version = "0.34", default-features = false, optional = true }
+facet = { version = "0.46", default-features = false, features = ["alloc"] }
+facet-reflect = { version = "0.46", default-features = false, features = [
     "alloc",
 ] }
 
@@ -39,10 +39,10 @@ thiserror = { version = "2", default-features = false }
 log = "0.4"
 
 [dev-dependencies]
-eframe = { version = "0.33" }
+eframe = { version = "0.34" }
 color-eyre = { version = "0.6" }
-egui-probe = { version = "0.10.0", features = ["derive"] }
-facet-testhelpers = "0.44.3"
+egui-probe = { version = "0.11.0", features = ["derive"] }
+facet-testhelpers = "0.46"
 
 
 # [patch.crates-io]
