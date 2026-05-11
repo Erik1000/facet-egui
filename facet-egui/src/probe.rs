@@ -55,6 +55,26 @@ fn shape_display_name(shape: &facet::Shape) -> &str {
     egui_rename(shape.attributes).unwrap_or_else(|| shape.effective_name())
 }
 
+fn text_line_count(s: &str) -> usize {
+    1 + s.chars().filter(|&c| c == '\n').count()
+}
+
+fn shift_enter_pressed(ui: &Ui) -> bool {
+    ui.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.shift
+            )
+        })
+    })
+}
+
 fn should_render_as_display(shape: &facet::Shape, attributes: &[facet::Attr]) -> bool {
     has_egui_as_display(attributes) || has_egui_as_display(shape.attributes)
 }
@@ -2047,7 +2067,17 @@ fn show_inline_poke_scalar(
         }
         ScalarType::String => {
             if let Ok(v) = poke.get_mut::<String>() {
-                return ui.add(TextEdit::singleline(v));
+                if v.contains('\n') {
+                    let rows = text_line_count(v);
+                    return ui.add(TextEdit::multiline(v).desired_rows(rows));
+                }
+                let mut r = ui.add(TextEdit::singleline(v));
+                if (r.has_focus() || r.lost_focus()) && shift_enter_pressed(ui) {
+                    v.push('\n');
+                    r.mark_changed();
+                    r.request_focus();
+                }
+                return r;
             }
         }
         ScalarType::Char => {
@@ -2065,6 +2095,10 @@ fn show_inline_poke_scalar(
         ScalarType::CowStr => {
             if let Ok(v) = poke.get::<Cow<'_, str>>() {
                 let mut s = v.clone();
+                if s.contains('\n') {
+                    let rows = text_line_count(&s);
+                    return ui.add_enabled(false, TextEdit::multiline(&mut s).desired_rows(rows));
+                }
                 return ui.add_enabled(false, TextEdit::singleline(&mut s));
             }
         }
@@ -2139,18 +2173,31 @@ fn show_inline_peek_scalar(peek: Peek<'_, '_>, scalar_type: ScalarType, ui: &mut
         }
         ScalarType::Str => {
             if let Ok(v) = peek.get::<str>() {
-                return ui.add_enabled(false, TextEdit::singleline(&mut &*v));
+                let mut s = v;
+                if s.contains('\n') {
+                    let rows = text_line_count(s);
+                    return ui.add_enabled(false, TextEdit::multiline(&mut s).desired_rows(rows));
+                }
+                return ui.add_enabled(false, TextEdit::singleline(&mut s));
             }
         }
         ScalarType::CowStr => {
             if let Ok(v) = peek.get::<Cow<'_, str>>() {
                 let mut s = v.clone();
+                if s.contains('\n') {
+                    let rows = text_line_count(&s);
+                    return ui.add_enabled(false, TextEdit::multiline(&mut s).desired_rows(rows));
+                }
                 return ui.add_enabled(false, TextEdit::singleline(&mut s));
             }
         }
         ScalarType::String => {
             if let Ok(v) = peek.get::<String>() {
                 let mut s: Cow<'_, str> = Cow::Borrowed(v.as_str());
+                if s.contains('\n') {
+                    let rows = text_line_count(&s);
+                    return ui.add_enabled(false, TextEdit::multiline(&mut s).desired_rows(rows));
+                }
                 return ui.add_enabled(false, TextEdit::singleline(&mut s));
             }
         }
