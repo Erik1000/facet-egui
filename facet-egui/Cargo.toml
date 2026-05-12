@@ -15,14 +15,13 @@ name = "comparison_egui_probe"
 harness = false
 
 [features]
-default = ["std", "egui"]
+default = ["std"]
 std = ["facet/std", "facet-reflect/std", "thiserror/std"]
-egui = ["dep:egui"]
 
 [dependencies]
 facet-maybe-mut.workspace = true
 
-egui = { version = "0.34", default-features = false, optional = true }
+egui = { version = "0.34", default-features = false }
 facet = { version = "0.46", default-features = false, features = ["alloc"] }
 facet-reflect = { version = "0.46", default-features = false, features = [
     "alloc",

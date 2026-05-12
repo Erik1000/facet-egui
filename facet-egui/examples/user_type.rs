@@ -1,4 +1,5 @@
 use eframe::egui;
+use egui::ScrollArea;
 use facet::Facet;
 use facet_egui::FacetProbe;
 use std::{
@@ -69,7 +70,9 @@ impl eframe::App for App {
             ui.heading("Central Panel");
             ui.separator();
             ui.label("Value:");
-            FacetProbe::new(&self.shared).show(ui);
+            ScrollArea::both().show(ui, |ui| {
+                FacetProbe::new(&self.shared).show(ui);
+            });
         });
     }
 }

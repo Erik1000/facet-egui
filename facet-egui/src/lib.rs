@@ -1,10 +1,8 @@
 mod layout;
-#[cfg(feature = "egui")]
 use facet_maybe_mut as maybe_mut;
 mod probe;
 pub use maybe_mut::MaybeMut;
 
-#[cfg(feature = "egui")]
 pub use probe::{FacetProbe, MaybeMutT};
 
 facet::define_attr_grammar! {
