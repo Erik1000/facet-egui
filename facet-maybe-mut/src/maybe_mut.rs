@@ -23,11 +23,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     pub fn into_peek(self) -> Peek<'mem, 'facet> {
         match self {
             MaybeMut::Not(n) => n,
-            MaybeMut::Mut(m) => {
-                let m: Poke<'mem, 'facet> = m;
-                let peek: Peek<'mem, 'facet> = unsafe { Peek::unchecked_new(m.data(), m.shape()) };
-                peek
-            }
+            MaybeMut::Mut(m) => m.into_peek(),
         }
     }
 

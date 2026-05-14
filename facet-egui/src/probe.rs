@@ -1,6 +1,10 @@
 #![allow(clippy::too_many_arguments)]
 
-use std::{borrow::Cow, ops::DerefMut};
+use alloc::{
+    borrow::{Cow, ToOwned},
+    string::{String, ToString},
+};
+use core::ops::DerefMut;
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
@@ -130,7 +134,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     ///
     /// Use this when the probe can move in the UI hierarchy (e.g. draggable tabs),
     /// so collapse/expand state remains stable.
-    pub fn with_id_source(mut self, id_source: impl std::hash::Hash) -> Self {
+    pub fn with_id_source(mut self, id_source: impl core::hash::Hash) -> Self {
         self.id = Some(Id::new(id_source));
         self
     }
@@ -233,7 +237,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
                     return ui.colored_label(Color32::RED, "Lock Failure");
                 }
                 Err(e) => {
-                    return ui.colored_label(Color32::RED, format!("Error: {e}"));
+                    return ui.colored_label(Color32::RED, alloc::format!("Error: {e}"));
                 }
             }
         };
@@ -784,7 +788,7 @@ fn show_inner_rows_poke_list(
     // collect the requested swap and apply it after the iteration.
     let mut pending_swap: Option<(usize, usize)> = None;
     for idx in 0..len {
-        let label = format!("[{idx}]");
+        let label = alloc::format!("[{idx}]");
         if let Some(field_poke) = list.get_mut(idx) {
             let row_id = id.with(("list", idx));
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
@@ -1265,7 +1269,7 @@ fn show_inner_rows_peek_list(
     for (idx, item) in list.iter().enumerate() {
         let row_id = id.with(("list", idx));
         got_inner = true;
-        let label = format!("[{idx}]");
+        let label = alloc::format!("[{idx}]");
         let Some(mut guard) = lock_child(MaybeMut::Not(item)) else {
             continue;
         };
@@ -1316,7 +1320,7 @@ fn show_inner_rows_peek_map(
     for (idx, (key, value)) in map.iter().enumerate() {
         let row_id = id.with(("map", idx));
         got_inner = true;
-        let label = format!("{}", key);
+        let label = alloc::format!("{}", key);
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
@@ -1367,7 +1371,7 @@ fn show_inner_rows_peek_set(
     for (idx, value) in set.iter().enumerate() {
         let row_id = id.with(("set", idx));
         got_inner = true;
-        let label = format!("[{idx}]");
+        let label = alloc::format!("[{idx}]");
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
@@ -1447,7 +1451,7 @@ fn show_inner_rows_peek_tuple(
     for (idx, (_field, value)) in tuple.fields().enumerate() {
         let row_id = id.with(("tuple", idx));
         got_inner = true;
-        let label = format!("[{idx}]");
+        let label = alloc::format!("[{idx}]");
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
@@ -1540,7 +1544,7 @@ fn show_inline_poke(
     as_display: bool,
 ) -> Response {
     if as_display || should_render_as_display(poke.shape(), &[]) {
-        return ui.label(format!("{}", poke.as_peek()));
+        return ui.label(alloc::format!("{}", poke.as_peek()));
     }
 
     if let Some(scalar_type) = poke.as_peek().scalar_type() {
@@ -1569,7 +1573,7 @@ fn show_inline_poke(
         return show_inline_poke_set(poke, set_def, ui);
     }
     if let Ok(tuple) = poke.as_peek().into_tuple() {
-        return ui.weak(format!("({})", tuple.len()));
+        return ui.weak(alloc::format!("({})", tuple.len()));
     }
     if let Ok(ptr) = poke.as_peek().into_pointer()
         && let Some(inner) = ptr.borrow_inner()
@@ -1594,7 +1598,7 @@ fn show_inline_poke_list(poke: &mut Poke<'_, '_>, list_def: ListDef, ui: &mut Ui
 
     let mut changed = false;
     let r = ui.horizontal(|ui| {
-        ui.weak(format!("[{len}]"));
+        ui.weak(alloc::format!("[{len}]"));
 
         if has_push && has_default && ui.small_button("+").clicked() {
             changed |= try_push_default_to_list(poke, list_def);
@@ -1662,7 +1666,7 @@ fn show_inline_poke_map(poke: &mut Poke<'_, '_>, map_def: MapDef, ui: &mut Ui) -
 
     let mut changed = false;
     let r = ui.horizontal(|ui| {
-        ui.weak(format!("[{len}]"));
+        ui.weak(alloc::format!("[{len}]"));
 
         if can_insert
             && ui
@@ -1712,7 +1716,7 @@ fn show_inline_poke_set(poke: &mut Poke<'_, '_>, set_def: SetDef, ui: &mut Ui) -
 
     let mut changed = false;
     let r = ui.horizontal(|ui| {
-        ui.weak(format!("[{len}]"));
+        ui.weak(alloc::format!("[{len}]"));
 
         if can_insert
             && ui
@@ -2017,7 +2021,7 @@ fn show_inline_poke_scalar(
         ScalarType::U128 => {
             // DragValue doesn't support u128, show as label
             if let Ok(v) = poke.get::<u128>() {
-                return ui.label(format!("{v}"));
+                return ui.label(alloc::format!("{v}"));
             }
         }
         ScalarType::USize => {
@@ -2047,7 +2051,7 @@ fn show_inline_poke_scalar(
         }
         ScalarType::I128 => {
             if let Ok(v) = poke.get::<i128>() {
-                return ui.label(format!("{v}"));
+                return ui.label(alloc::format!("{v}"));
             }
         }
         ScalarType::ISize => {
@@ -2089,7 +2093,7 @@ fn show_inline_poke_scalar(
         ScalarType::Str => {
             // str is unsized, fall through to display
             if poke.shape().is_display() {
-                return ui.label(format!("{}", poke.as_peek()));
+                return ui.label(alloc::format!("{}", poke.as_peek()));
             }
         }
         ScalarType::CowStr => {
@@ -2103,22 +2107,22 @@ fn show_inline_poke_scalar(
             }
         }
         _ if poke.shape().is_display() => {
-            return ui.label(format!("{}", poke.as_peek()));
+            return ui.label(alloc::format!("{}", poke.as_peek()));
         }
         _ if poke.shape().is_debug() => {
-            return ui.label(format!("{:?}", poke.as_peek()));
+            return ui.label(alloc::format!("{:?}", poke.as_peek()));
         }
         _ => {}
     }
     ui.colored_label(
         Color32::YELLOW,
-        format!("unsupported scalar: {scalar_type:?}"),
+        alloc::format!("unsupported scalar: {scalar_type:?}"),
     )
 }
 
 fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id, as_display: bool) -> Response {
     if as_display || should_render_as_display(peek.shape(), &[]) {
-        return ui.label(format!("{}", peek));
+        return ui.label(alloc::format!("{}", peek));
     }
 
     if let Some(scalar_type) = peek.scalar_type() {
@@ -2140,13 +2144,13 @@ fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id, as_display: bool) -
         return ui.weak(shape_display_name(peek.shape()));
     }
     if let Ok(list) = peek.into_list_like() {
-        return ui.weak(format!("[{}]", list.len()));
+        return ui.weak(alloc::format!("[{}]", list.len()));
     }
     if let Ok(map) = peek.into_map() {
-        return ui.weak(format!("[{}]", map.len()));
+        return ui.weak(alloc::format!("[{}]", map.len()));
     }
     if let Ok(tuple) = peek.into_tuple() {
-        return ui.weak(format!("({})", tuple.len()));
+        return ui.weak(alloc::format!("({})", tuple.len()));
     }
     if let Ok(ptr) = peek.into_pointer()
         && let Some(inner) = ptr.borrow_inner()
@@ -2202,16 +2206,16 @@ fn show_inline_peek_scalar(peek: Peek<'_, '_>, scalar_type: ScalarType, ui: &mut
             }
         }
         _ if peek.shape().is_display() => {
-            return ui.label(format!("{}", peek));
+            return ui.label(alloc::format!("{}", peek));
         }
         _ if peek.shape().is_debug() => {
-            return ui.label(format!("{:?}", peek));
+            return ui.label(alloc::format!("{:?}", peek));
         }
         _ => {}
     }
     ui.colored_label(
         Color32::YELLOW,
-        format!("unsupported scalar: {scalar_type:?}"),
+        alloc::format!("unsupported scalar: {scalar_type:?}"),
     )
 }
 

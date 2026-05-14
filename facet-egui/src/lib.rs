@@ -1,3 +1,7 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 mod layout;
 use facet_maybe_mut as maybe_mut;
 mod probe;

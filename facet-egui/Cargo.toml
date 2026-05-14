@@ -5,19 +5,30 @@ edition = "2024"
 authors = ["Erik Tesar <erik@erik-tesar.com>"]
 license = "MIT OR Apache-2.0"
 description = "An egui inspector/editor widget for any type that implements Facet"
-readme = "../README.md"
+readme = "README.md"
 repository = "https://github.com/Erik1000/facet-egui"
 categories = ["gui", "graphics"]
 keywords = ["facet", "reflections", "egui", "probe"]
 
-[[test]]
+[[example]]
+name = "shared_string"
+required-features = ["std"]
+
+[[example]]
+name = "user_type"
+required-features = ["std"]
+
+[[example]]
 name = "comparison_egui_probe"
-harness = false
+required-features = ["std"]
+
+[[example]]
+name = "probe_gallery"
+required-features = ["std"]
 
 [features]
-default = ["std"]
+default = []
 std = ["facet/std", "facet-reflect/std", "thiserror/std"]
-
 [dependencies]
 facet-maybe-mut.workspace = true
 
@@ -42,8 +53,4 @@ eframe = { version = "0.34" }
 color-eyre = { version = "0.6" }
 egui-probe = { version = "0.11.0", features = ["derive"] }
 facet-testhelpers = "0.46"
-
-
-# [patch.crates-io]
-# facet = { git = "https://github.com/facet-rs/facet.git" }
-# facet-reflect = { git = "https://github.com/facet-rs/facet.git" }
+image = { version = "0.25", default-features = false, features = ["png"] }

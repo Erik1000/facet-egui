@@ -5,10 +5,10 @@ edition = "2024"
 authors = ["Erik Tesar <erik@erik-tesar.com>"]
 license = "MIT OR Apache-2.0"
 description = "Utility crate to abstract away lock primitives in facet"
-readme = "../README.md"
+readme = "README.md"
 repository = "https://github.com/Erik1000/facet-egui"
 categories = ["concurrency"]
-keywords = ["facet", "reflections", "rwlock", "mutex"]
+keywords = ["facet", "reflections", "rwlock", "mutex", "sync"]
 
 [dependencies]
 facet = { version = "0.46", default-features = false, features = ["alloc"] }

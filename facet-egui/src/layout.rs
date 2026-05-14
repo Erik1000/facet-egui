@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use core::hash::Hash;
 
 // -- ProbeHeader: collapsible section state, ported from egui-probe --
 

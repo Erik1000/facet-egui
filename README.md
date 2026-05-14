@@ -1,108 +1,90 @@
-# facet-egui
+# [`facet-egui`](facet-egui/README.md) & [`facet-maybe-mut`](facet-maybe-mut/README.md)
 
-An [egui](https://github.com/emilk/egui) inspector/editor widget for any type that implements [`Facet`](https://github.com/facet-rs/facet). Derive `Facet` on your types and get a full property editor with no additional boilerplate.
+[![Crates.io](https://img.shields.io/crates/v/facet-egui.svg)](https://crates.io/crates/facet-egui)
+[![Docs.rs](https://docs.rs/facet-egui/badge.svg)](https://docs.rs/facet-egui)
+[![CI](https://github.com/Erik1000/facet-egui/workflows/CI/badge.svg)](https://github.com/Erik1000/facet-egui/actions)
+[![License](https://img.shields.io/crates/l/facet-egui.svg)](LICENSE-MIT)
 
-Built on top of [facet](https://github.com/facet-rs/facet)'s reflection system, this crate can inspect and mutate structs, enums, `Option`, `Vec`, maps, scalars, and nested combinations thereof — including types behind `Arc<RwLock<T>>` or `Arc<Mutex<T>>`.
+Powerful reflection-based UI tools built on top of [`facet`](https://github.com/facet-rs/facet). This workspace contains two complementary crates for inspecting, editing, and working with data at runtime.
 
-## Workspace
+<p align="center">
+  <a href="https://mhc-solutions.de/">
+    <img src="https://www.mhc-solutions.de/files/content/logos/MHC-S-logo-farbig.svg" alt="MHC Solutions GmbH" />
+  </a>
+</p>
 
-This repository contains two crates:
+> Development of these crates is supported by [**MHC Solutions GmbH**](https://mhc-solutions.de), an engineering company focused on building, industrial, and energy automation whose support for open-source work helps make projects like this possible.
 
-### `facet-egui`
+## `facet-egui`
 
-The main crate. Provides `FacetProbe`, a widget that renders an editable property panel for any `Facet` type.
+An [egui](https://github.com/emilk/egui) inspector/editor widget that automatically generates property panels for any type implementing `facet::Facet`.
 
-Features:
-- Recursive struct/enum/list/map/option inspection and editing
-- Enum variant switching via combo box
-- `Option<T>` toggle between `None` and `Some(T::default())`
-- List manipulation (push/pop)
-- Transparent traversal through smart pointers (`Arc`, `Rc`, `Box`, etc.)
-- Automatic locking of `RwLock`/`Mutex` for shared types
-- Attribute grammar for per-field control (`#[facet(egui::skip)]`, `#[facet(egui::readonly)]`, `#[facet(egui::rename("..."))]`)
+![FacetProbe Screenshot](facet-egui/examples/probe_gallery.png)
 
-### `facet-maybe-mut`
+**Highlights:**
+- Zero-boilerplate UI generation — just `#[derive(Facet)]`
+- Recursive inspection and editing of structs, enums, lists, maps, and options
+- Automatic lock handling for `Arc<RwLock<T>>` and `Arc<Mutex<T>>`
+- Per-field customization with `#[facet(...)]` attributes
+- Both editable and read-only modes
 
-A utility crate that abstracts over shared and exclusive access to `Facet` types. It provides `MaybeMut`, an enum over `Peek` (read-only) and `Poke` (mutable) facet references, with the ability to transparently acquire locks through smart pointers.
+See [`facet-egui/README.md`](facet-egui/README.md) for full documentation and examples.
 
-Given a `&Arc<RwLock<T>>`, `MaybeMut` can walk through the `Arc`, acquire the `RwLock`, and hand back a mutable `Poke` to the inner `T` — hiding the locking details from the caller.
+## `facet-maybe-mut`
 
-This is intentionally simple and not suitable for performance-critical code. It exists to make things like UI editors straightforward.
+A utility crate for working with `facet` types that may be read-only or mutable, with transparent lock handling for concurrent access patterns.
 
-## Usage
+**Highlights:**
+- Single code path for both read-only and mutable access
+- Automatic lock acquisition for `Arc<RwLock<T>>` and `Arc<Mutex<T>>`
+- Smart pointer dereferencing through `Arc`, `Rc`, `Box`, etc.
+- Clean abstraction for conditional mutability
 
-```rust
-use facet::Facet;
-use facet_egui::FacetProbe;
+See [`facet-maybe-mut/README.md`](facet-maybe-mut/README.md) for full documentation and examples.
 
-#[derive(Debug, Facet, Default)]
-pub struct Config {
-    name: String,
-    enabled: bool,
-    count: u32,
-}
+## How They Work Together
 
-// In your egui update loop:
-fn show(ui: &mut egui::Ui, config: &mut Config) {
-    FacetProbe::new(config).with_header("Config").show(ui);
-}
-```
-
-It also works with shared types:
-
-```rust
-use std::sync::{Arc, RwLock};
-
-let shared = Arc::new(RwLock::new(Config::default()));
-
-// From any thread that has a clone of the Arc:
-FacetProbe::new(&shared).show(ui);
-```
-
-## Attributes
-
-Control field rendering with facet attributes:
-
-```rust
-#[derive(Facet)]
-pub struct Player {
-    name: String,
-
-    #[facet(egui::skip)]
-    internal_id: u64,
-
-    #[facet(egui::readonly)]
-    score: u32,
-
-    #[facet(egui::rename("HP"))]
-    health_points: f32,
-}
-```
+- **`facet-egui`** uses `facet-maybe-mut` internally to handle both editable and read-only modes, allowing a single code path to work with data whether it's directly accessible or behind locks.
+- **`facet-maybe-mut`** provides the abstraction layer for transparent lock handling, which enables `facet-egui` to edit shared state in concurrent scenarios.
 
 ## Status
 
-Work in progress. The API is not stable. 
+**Work in progress.** The API is not stable.
 
-Due to `facet` not yet providing safe wrapper apis, `facet-egui` also contains
-`unsafe` code which may not be sound.
+Due to `facet` not yet providing safe wrapper APIs for everything, both crates contain `unsafe` code which may not be sound.
 
-# Credits
+## Architecture
 
-This crate is inspired by the great [`egui-probe`](https://github.com/zakarumych/egui-probe) crate which provides the same (and more) functionality with its own derive macro.
+Both crates are built on the `facet` reflection system:
+
+- **`facet::Facet`** — Derive macro that adds type introspection to any struct or enum
+- **`facet-reflect::Peek`** — Zero-copy immutable type reflection
+- **`facet-reflect::Poke`** — Zero-copy mutable type reflection  
+- **VTable dispatch** — Dynamic operations (push/pop/swap for lists, lock acquisition for smart pointers)
+- **Custom attributes** — Per-field control via `#[facet(...)]` macros
+
+See the individual crate READMEs for detailed feature documentation and API reference.
+
+## Examples
+
+- [probe_gallery](facet-egui/examples/probe_gallery.rs) — Complete showcase of `FacetProbe` in editable and readonly modes
+- [user_type](facet-egui/examples/user_type.rs) — Creating custom user types
+- [shared_string](facet-egui/examples/shared_string.rs) — Working with shared types
+
+## Credits
+
+- **`facet-egui`** is inspired by the [`egui-probe`](https://github.com/zakarumych/egui-probe) crate
+- [`**facet**`](https://github.com/facet-rs/facet) for being an excellent Rust reflection library
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  <http://www.apache.org/licenses/LICENSE-2.0)>
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or
-  <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
 
 ## Contribution
 
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

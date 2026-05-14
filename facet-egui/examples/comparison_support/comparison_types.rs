@@ -38,11 +38,6 @@ struct InnerValue {
     multi_line: String,
 }
 
-impl Drop for InnerValue {
-    fn drop(&mut self) {
-        println!("InnerValue is being dropped");
-    }
-}
 #[derive(Debug, EguiProbe, Facet, Default)]
 #[egui_probe(tags inlined)]
 #[repr(C)]
