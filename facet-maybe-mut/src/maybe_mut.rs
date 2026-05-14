@@ -54,7 +54,7 @@ pub enum MakeLockErrorKind {
 }
 
 /// Depending on whether this is a read or write lock, `P` will be either
-/// [`PtrConst`] or [`PtrMut`]. This enum makes `P` dynamic
+/// [`PtrConst`] or [`PtrMut`](facet::PtrMut). This enum makes `P` dynamic
 #[derive(From)]
 pub(crate) enum LockGuardType {
     Write(WriteLockResult),
@@ -62,6 +62,11 @@ pub(crate) enum LockGuardType {
 }
 
 impl LockGuardType {
+    /// Safety
+    ///
+    /// This is the raw pointer returned from the lock which is already
+    /// available via [`Guard`]. Creating a new [`Peek`] or [`Poke`] from this
+    /// [`PtrConst`] is UB.
     pub fn data_const(&self) -> PtrConst {
         match self {
             Self::Write(w) => w.data_const(),

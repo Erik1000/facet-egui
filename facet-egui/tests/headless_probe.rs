@@ -79,7 +79,7 @@ fn expand_all_renders_nested_data_without_panicking() {
     let shapes = render_shapes(|ui| {
         let response = FacetProbe::new(&mut nested)
             .with_header("nested")
-            .expand_all()
+            .expand_all(true)
             .show(ui);
         assert!(!response.changed());
     });

@@ -88,7 +88,13 @@ FacetProbe::new(&mut self.profile)
 FacetProbe::new(&self.readonly_data)
     .with_id_source("readonly_probe")
     .with_header("snapshot")
-    .readonly()
+    .readonly(true)
+    .show(ui);
+
+// Expand all sections by default:
+FacetProbe::new(&mut self.data)
+    .with_header("data")
+    .expand_all(true)
     .show(ui);
 ```
 

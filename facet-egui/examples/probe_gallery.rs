@@ -251,7 +251,7 @@ impl eframe::App for App {
                                 FacetProbe::new(&mut self.scratch_profile)
                                     .with_id_source("readonly_probe")
                                     .with_header("snapshot")
-                                    .readonly()
+                                    .readonly(true)
                                     .show(ui);
                             });
                     });

@@ -111,16 +111,16 @@ pub enum MaybeMutT<'mem, T> {
 }
 
 impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
-    pub fn readonly(self) -> Self {
+    pub fn readonly(self, readonly: bool) -> Self {
         Self {
-            read_only: true,
+            read_only: readonly,
             ..self
         }
     }
 
-    pub fn expand_all(self) -> Self {
+    pub fn expand_all(self, expand_all: bool) -> Self {
         Self {
-            expand_all: true,
+            expand_all,
             ..self
         }
     }
