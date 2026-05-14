@@ -30,6 +30,9 @@ cargo run --example probe_gallery
 Here's a complete example demonstrating the types you can inspect and edit:
 
 ```rust
+use facet::Facet;
+use std::collections::BTreeMap;
+
 #[derive(Debug, Facet, Default)]
 #[repr(C)]
 enum ThemeMode {
@@ -75,27 +78,35 @@ struct Profile {
 
 Creating and displaying a probe is simple:
 
-```rust
+```rust,no_run
+use facet::Facet;
 use facet_egui::FacetProbe;
 
-// In your egui UI function:
-FacetProbe::new(&mut self.profile)
+#[derive(Facet)]
+struct Data {
+  value: i32,
+}
+
+fn render(ui: &mut egui::Ui, profile: &mut Data, readonly_data: &Data, data: &mut Data) {
+  // In your egui UI function:
+  FacetProbe::new(profile)
     .with_id_source("my_probe")
     .with_header("profile")
     .show(ui);
 
-// For readonly mode:
-FacetProbe::new(&self.readonly_data)
+  // For readonly mode:
+  FacetProbe::new(readonly_data)
     .with_id_source("readonly_probe")
     .with_header("snapshot")
     .readonly(true)
     .show(ui);
 
-// Expand all sections by default:
-FacetProbe::new(&mut self.data)
+  // Expand all sections by default:
+  FacetProbe::new(data)
     .with_header("data")
     .expand_all(true)
     .show(ui);
+}
 ```
 
 ## Features

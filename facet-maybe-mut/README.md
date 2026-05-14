@@ -29,6 +29,8 @@ facet-reflect = "0.46"
 ## Example: mutate through `Arc<RwLock<T>>`
 
 ```rust
+# #[cfg(feature = "std")]
+# fn main() {
 use std::sync::{Arc, RwLock};
 
 use facet::Facet;
@@ -46,11 +48,17 @@ let mut guard = MaybeMut::Not(Peek::new(&value)).write().unwrap();
 if let MaybeMut::Mut(poke) = &mut *guard {
     poke.get_mut::<Being>().unwrap().age += 1;
 }
+# }
+#
+# #[cfg(not(feature = "std"))]
+# fn main() {}
 ```
 
 ## Example: read with automatic lock handling
 
 ```rust
+# #[cfg(feature = "std")]
+# fn main() {
 use std::sync::{Arc, RwLock};
 
 use facet::Facet;
@@ -67,6 +75,10 @@ let value = Arc::new(RwLock::new(Being { age: 20 }));
 let guard = MaybeMut::Not(Peek::new(&value)).read().unwrap();
 let age = guard.as_peek().get::<Being>().unwrap().age;
 assert_eq!(age, 20);
+# }
+#
+# #[cfg(not(feature = "std"))]
+# fn main() {}
 ```
 
 ## Notes

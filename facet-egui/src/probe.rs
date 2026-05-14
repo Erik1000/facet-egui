@@ -119,10 +119,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     }
 
     pub fn expand_all(self, expand_all: bool) -> Self {
-        Self {
-            expand_all,
-            ..self
-        }
+        Self { expand_all, ..self }
     }
 
     pub fn with_header(mut self, label: impl Into<WidgetText>) -> Self {
@@ -2090,11 +2087,9 @@ fn show_inline_poke_scalar(
                 return ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()));
             }
         }
-        ScalarType::Str => {
-            // str is unsized, fall through to display
-            if poke.shape().is_display() {
-                return ui.label(alloc::format!("{}", poke.as_peek()));
-            }
+        // str is unsized, fall through to display
+        ScalarType::Str if poke.shape().is_display() => {
+            return ui.label(alloc::format!("{}", poke.as_peek()));
         }
         ScalarType::CowStr => {
             if let Ok(v) = poke.get::<Cow<'_, str>>() {

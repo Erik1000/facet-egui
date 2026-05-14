@@ -74,7 +74,7 @@ See the individual crate READMEs for detailed feature documentation and API refe
 ## Credits
 
 - **`facet-egui`** is inspired by the [`egui-probe`](https://github.com/zakarumych/egui-probe) crate
-- [`**facet**`](https://github.com/facet-rs/facet) for being an excellent Rust reflection library
+- Big thanks to [**`facet`**](https://github.com/facet-rs/facet) for being an excellent Rust reflection library
 
 ## License
 
