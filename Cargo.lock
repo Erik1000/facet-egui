@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "facet-egui"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "color-eyre",
  "derive_more",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "facet-maybe-mut"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "derive_more",
  "facet",
