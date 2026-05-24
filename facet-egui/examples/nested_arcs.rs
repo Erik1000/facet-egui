@@ -86,7 +86,7 @@ impl eframe::App for App {
             ui.separator();
             ui.label("Extra Weaks (separate field):");
             FacetProbe::new(&mut self.extra)
-                .readonly(false)
+                .readonly(true)
                 .expand_all(true)
                 .show(ui);
 

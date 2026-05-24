@@ -385,7 +385,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     {
         let peek = self.into_peek();
         // unwrap smart pointers
-        // this will deref Arcs but not Weaks, Weaks are handled special as in the guard that automatically downgrades them on Drop
+        // this will deref Arcs but not Weaks, Weaks are handled special as a guard that automatically downgrades them on Drop
         let v = peek.innermost_peek();
         // the shape of the pointer type (if it is one) but derefence smart pointers that can so without locking
         // e.g. Arc<T>
@@ -403,7 +403,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             });
         };
 
-        // we dont care if we lock it (Mutex) or read lock it (RwLock)
+        // we dont care if we lock it (Mutex) or read lock it (RwLock) or just upgrade it so it can be dereferenced
         let res: Result<LockGuardType, _> = if let Some(read_fn) = pointer.vtable.read_fn {
             unsafe { read_fn(v.data()) }.map(Into::into)
         } else if let Some(lock_fn) = pointer.vtable.lock_fn {
@@ -417,7 +417,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 .allocate()
                 .expect("strong pointer is always sized");
 
-            // SAFETY: turning this peek into a PtrMut is okay,. because
+            // SAFETY: turning this peek into a PtrMut is okay, because
             // the upgrade function only needs &self
             // in theory, the upgrade_fn signature could take a PtrConst as well.
             let ptr = unsafe { v.data().into_mut() };
@@ -456,10 +456,61 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     .expect("a smart pointer always has an inner shape"),
             )
         };
-        let value = MaybeMut::Not(peek);
+        let (mut guards, mut value): (Vec<LockGuardType>, MaybeMut<'lock, 'facet>) =
+            (vec![lock], MaybeMut::Not(peek.innermost_peek()));
+
+        // unwrap remaining inner pointer types
+        // -> all types that have an inner type and are a pointer
+        while let Some(_inner) = value.as_peek().shape().inner
+            && let Def::Pointer(def) = value.as_peek().shape().def
+            // lock gets read-locked in the next read call
+            && (def.flags.contains(PointerFlags::LOCK) ||
+            // weak gets upgraded at the next read call
+            def.flags.contains(PointerFlags::WEAK) ||
+            // atomics just get unwrapped in the next read call
+            def.flags.contains(PointerFlags::ATOMIC))
+        {
+            // SAFETY: we synthesize a Peek with the outer 'mem lifetime so we
+            // can re-enter `read`. The fabricated lifetime never escapes:
+            //
+            // * On success, the recursive call returns `Guard<'lock>`. Its
+            //   `data` is bounded by 'lock and its guards are moved into our
+            //   `guards` Vec, so the parent lock keeps the pointer live for
+            //   as long as the returned `Guard` exists.
+            // * On failure, we MUST NOT propagate the inner
+            //   `MakeLockError::unchanged` since that Peek carries the
+            //   fabricated 'mem lifetime while actually pointing into
+            //   lock-protected memory that we are about to release as our
+            //   `guards` Vec drops on early return. Instead we substitute
+            //   the original outer Peek `v`, which is genuinely valid for
+            //   'mem because it comes straight from the function input.
+            let shorter_peek: Peek<'mem, 'facet> =
+                unsafe { Peek::unchecked_new(value.as_peek().data(), value.shape()) };
+            let shorter_maybe: MaybeMut<'mem, 'facet> = MaybeMut::Not(shorter_peek);
+            let guard: Guard<'lock, 'facet> = match shorter_maybe.read() {
+                Ok(g) => g,
+                Err(e) => {
+                    // Peek v needs no Guards, drop them explicitly to free
+                    // locks (they would be dropped by the return anyways)
+                    drop(guards);
+                    // Discard `e.unchanged` (would dangle once `guards`
+                    // drops on return); substitute the original outer Peek
+                    // which is actually valid for 'mem.
+                    return Err(MakeLockError {
+                        unchanged: v,
+                        kind: e.kind,
+                    });
+                }
+            };
+            // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
+            // this would lead to a double unlock later
+            guards.extend(guard.guards);
+            // SAFETY: set the new value to the inner most available value
+            value = guard.data;
+        }
         Ok(Guard {
-            guards: vec![lock],
             data: value,
+            guards,
         })
     }
 }
