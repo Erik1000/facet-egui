@@ -1,5 +1,5 @@
 use derive_more::{Deref, DerefMut, From};
-use facet::{Def, PointerFlags, PtrConst, ReadLockResult, Shape, WriteLockResult};
+use facet::{Def, PointerFlags, PtrConst, PtrMut, ReadLockResult, Shape, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
 /// Some reference to a type that implements [`Facet`](facet::Facet) that may be
@@ -51,6 +51,11 @@ pub enum MakeLockErrorKind {
     /// vtable returned an error.
     #[error("locking of type failed")]
     LockFailure,
+    /// A weak pointer where the upgrade function returned None.
+    ///
+    /// There exist no strong references (no instances of an `Arc`)
+    #[error("could not upgrade weak pointer, no strong references exist")]
+    NotUpgradable,
 }
 
 /// Depending on whether this is a read or write lock, `P` will be either
@@ -59,6 +64,16 @@ pub enum MakeLockErrorKind {
 pub(crate) enum LockGuardType {
     Write(WriteLockResult),
     Read(ReadLockResult),
+    /// A Weak that has been upgraded to an Arc or Rc
+    /// The downgrade is handled directly in the [`Drop`] implementation of this
+    /// [`LockGuardType`]
+    Upgrade {
+        /// The [`Shape`] of the strong pointer that can be used later to
+        /// downgrade again
+        strong_shape: &'static Shape,
+        /// The pointer to the allocated Arc or Rc
+        allocation: PtrMut,
+    },
 }
 
 impl LockGuardType {
@@ -71,6 +86,34 @@ impl LockGuardType {
         match self {
             Self::Write(w) => w.data_const(),
             Self::Read(r) => *r.data(),
+            Self::Upgrade {
+                strong_shape: _,
+                allocation,
+            } => allocation.as_const(),
+        }
+    }
+}
+
+impl Drop for LockGuardType {
+    fn drop(&mut self) {
+        if let Self::Upgrade {
+            strong_shape,
+            allocation,
+        } = self
+        {
+            // dropping the strong pointer automatically decreases reference
+            // count
+            // SAFETY: we cant just deallocate but need to run the actual drop
+            // implementation as well since the drop impl of the strong pointer decreases strong pointer count
+            unsafe {
+                strong_shape.call_drop_in_place(*allocation);
+            }
+            // SAFETY: the allocation was created using Shape::alloc
+            unsafe {
+                strong_shape
+                    .deallocate_mut(*allocation)
+                    .expect("strong pointer is sized");
+            }
         }
     }
 }
@@ -170,26 +213,38 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 };
 
                 // we dont care if we lock it (Mutex) or write lock it (RwLock)
-                let lock_fn = match (pointer.vtable.write_fn, pointer.vtable.lock_fn) {
-                    (Some(write_fn), _) => write_fn,
-                    (_, Some(lock_fn)) => lock_fn,
-                    _ => {
-                        return Err(MakeLockError {
+                let lock_fn =
+                    pointer
+                        .vtable
+                        .write_fn
+                        .or(pointer.vtable.lock_fn)
+                        .ok_or(MakeLockError {
                             unchanged: v,
                             kind: MakeLockErrorKind::NotLockable,
                         });
-                    }
-                };
+
                 // SAFETY: v.innermost_peek() unwraps all transparent wrappers like Arc or Rc until something that needs
                 // locking is reached which is also the same type we get the lock_fn from
-                let res = unsafe { lock_fn(v.data()) };
-                let Ok(lock) = res else {
-                    return Err(MakeLockError {
-                        unchanged: v,
-                        kind: MakeLockErrorKind::LockFailure,
-                    });
+                let lock = match lock_fn {
+                    Ok(lock_fn) => {
+                        let res = unsafe { lock_fn(v.data()) };
+                        let Ok(lock) = res else {
+                            return Err(MakeLockError {
+                                unchanged: v,
+                                kind: MakeLockErrorKind::LockFailure,
+                            });
+                        };
+                        lock
+                    }
+                    // TODO: write upgrade Weak<RwLock>??
+                    // Err(MakeLockError {
+                    //     unchanged,
+                    //     kind: MakeLockErrorKind::NotLockable,
+                    // }) => return Self::Not(unchanged).read()?.write(),
+                    Err(e) => {
+                        return Err(e);
+                    }
                 };
-
                 // SAFETY: creates access via the PtrMut returned from locking
                 // the smart pointer. 'mem outlives 'lock this means
                 // the returned SmartPointer<'mem> also outlives the mutable Poke<'lock>
@@ -223,6 +278,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     {
         let peek = self.into_peek();
         // unwrap smart pointers
+        // this will deref Arcs but not Weaks, Weaks are handled special as in the guard that automatically downgrades them on Drop
         let v = peek.innermost_peek();
         // the shape of the pointer type (if it is one) but derefence smart pointers that can so without locking
         // e.g. Arc<T>
@@ -245,6 +301,30 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             unsafe { read_fn(v.data()) }.map(Into::into)
         } else if let Some(lock_fn) = pointer.vtable.lock_fn {
             unsafe { lock_fn(v.data()) }.map(Into::into)
+            // handle weak pointers and try to upgrade them
+        } else if let Some(upgrade_fn) = pointer.vtable.upgrade_into_fn
+            && let Some(strong_shape) = def.into_pointer().ok().and_then(|x| x.strong())
+        {
+            // if the strong shape is unsized, the Facet implementation of the type is wrong.
+            let strong = strong_shape
+                .allocate()
+                .expect("strong pointer is always sized");
+
+            // SAFETY: turning this peek into a PtrMut is okay,. because
+            // the upgrade function only needs &self
+            // in theory, the upgrade_fn signature could take a PtrConst as well.
+            let ptr = unsafe { v.data().into_mut() };
+            // SAFETY: Facet implementation of Weak garantees strong is the correct
+            // shape of the strong part for this Weak
+            Ok(unsafe { upgrade_fn(ptr, strong) }
+                .map(|strong_instance| LockGuardType::Upgrade {
+                    strong_shape,
+                    allocation: strong_instance,
+                })
+                .ok_or(MakeLockError {
+                    kind: MakeLockErrorKind::NotUpgradable,
+                    unchanged: v,
+                })?)
         } else {
             return Err(MakeLockError {
                 unchanged: v,
