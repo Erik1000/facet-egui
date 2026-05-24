@@ -322,30 +322,49 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 while let Some(_inner) = value.as_peek().shape().inner
                     && let Def::Pointer(def) = value.as_peek().shape().def
                     // lock gets locked in the next write call
-                    && def.flags.contains(PointerFlags::LOCK) |
+                    && (def.flags.contains(PointerFlags::LOCK) ||
                     // weak gets upgraded at the next write call
-                    def.flags.contains(PointerFlags::WEAK) |
+                    def.flags.contains(PointerFlags::WEAK) ||
                     // atomics just get unwrapped in the next write call
-                    def.flags.contains(PointerFlags::ATOMIC)
+                    def.flags.contains(PointerFlags::ATOMIC))
                 {
-                    // FIXME: this is probably unsound
-                    // SAFETY:
-                    // later, we convert this Peek back to Peek<'lock> and we
-                    // limit all lifetimes to the shortest lifetime of the guard
-                    // for the sake of this method call, the lifetime does not
-                    // matter and only is there to satisfy the API
+                    // SAFETY: we synthesize a Peek with the outer 'mem lifetime so we
+                    // can re-enter `write`. The fabricated lifetime never escapes:
+                    //
+                    // * On success, the recursive call returns `Guard<'lock>`. Its
+                    //   `data` is bounded by 'lock and its guards are moved into our
+                    //   `guards` Vec, so the parent lock keeps the pointer live for
+                    //   as long as the returned `Guard` exists.
+                    // * On failure, we MUST NOT propagate the inner
+                    //   `MakeLockError::unchanged` since that Peek carries the
+                    //   fabricated 'mem lifetime while actually pointing into
+                    //   lock-protected memory that we are about to release as our
+                    //   `guards` Vec drops on early return. Instead we substitute
+                    //   the original outer Peek `v`, which is genuinely valid for
+                    //   'mem because it comes straight from the function input.
                     let shorter_peek: Peek<'mem, 'facet> =
                         unsafe { Peek::unchecked_new(value.as_peek().data(), value.shape()) };
-                    let shorter_maybe: MaybeMut<'_, '_> = MaybeMut::Not(shorter_peek);
-                    // we give this the same lifetime as lock
-                    let guard: Guard<'lock, 'facet> = shorter_maybe.write()?;
-                    // add all new guards to our guards. the order is correct here
+                    let shorter_maybe: MaybeMut<'mem, 'facet> = MaybeMut::Not(shorter_peek);
+                    let guard: Guard<'lock, 'facet> = match shorter_maybe.write() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            // Peek v needs no Guards, drop them explicitly to free
+                            // locks (they would be dropped by the return anyways)
+                            drop(guards);
+                            // Discard `e.unchanged` (would dangle once `guards`
+                            // drops on return); substitute the original outer Peek
+                            // which is actually valid for 'mem.
+                            return Err(MakeLockError {
+                                unchanged: v,
+                                kind: e.kind,
+                            });
+                        }
+                    };
                     // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
                     // this would lead to a double unlock later
                     guards.extend(guard.guards);
                     // SAFETY: set the new value to the inner most available value
                     value = guard.data;
-                    // TODO:
                 }
                 Ok(Guard {
                     data: value,
