@@ -79,6 +79,8 @@ pub(crate) enum LockGuardType {
 impl LockGuardType {
     /// Safety
     ///
+    /// For an Weak guard, this calls the `BorrowFn` of the (currently existing)
+    /// strong shape to obtain the data pointer.
     /// This is the raw pointer returned from the lock which is already
     /// available via [`Guard`]. Creating a new [`Peek`] or [`Poke`] from this
     /// [`PtrConst`] is UB.
@@ -87,9 +89,19 @@ impl LockGuardType {
             Self::Write(w) => w.data_const(),
             Self::Read(r) => *r.data(),
             Self::Upgrade {
-                strong_shape: _,
+                strong_shape,
                 allocation,
-            } => allocation.as_const(),
+            } => {
+                let borrow_fn = strong_shape
+                    .def
+                    .into_pointer()
+                    .expect("only pointer types get this lock type")
+                    .vtable
+                    .borrow_fn
+                    .expect("all strong pointers have a borrow function");
+                // SAFETY: allocation is the pointer of the strong type (Arc or Rc)
+                unsafe { borrow_fn(allocation.as_const()) }
+            }
         }
     }
 }
@@ -130,12 +142,17 @@ impl Drop for LockGuardType {
 pub struct Guard<'lock_mem, 'facet> {
     /// Dropping the guard handles freeing the lock
     ///
-    /// If this is None, the `data` can be accessed directly and there is no
+    /// If this is empty, the `data` can be accessed directly and there is no
     /// lock that must be freeed
     ///
     /// SAFETY: The pointer inside the [`LockGuardType`] MUST NOT be used
     /// since the data is already (mutable) available via `data`
-    _guard: Option<LockGuardType>,
+    ///
+    /// The drop order must be the reverse of this [`Vec`] (pop until empty)
+    /// in order to guarantee the locks are released in the correct order.
+    guards: Vec<LockGuardType>,
+    /// This [`MaybeMut`] contains the [`Peek`] or [`Poke`] of the most inner,
+    /// non lockable type.
     #[deref]
     #[deref_mut]
     data: MaybeMut<'lock_mem, 'facet>,
@@ -178,12 +195,12 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 // but only if this is a type that is not a smart pointer that can be locked
                 if let Def::Pointer(p) = v.as_peek().innermost_peek().shape().def
                 // restrict downgrading to Peek only if there is a a lock _somewhere_
-                    && p.flags.contains(PointerFlags::LOCK)
+                    && (p.flags.contains(PointerFlags::LOCK) || p.flags.contains(PointerFlags::WEAK))
                 {
                     Self::Not(v.into_peek()).write()
                 } else {
                     Ok(Guard {
-                        _guard: None,
+                        guards: Vec::new(),
                         data: v.into(),
                     })
                 }
@@ -225,43 +242,114 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
 
                 // SAFETY: v.innermost_peek() unwraps all transparent wrappers like Arc or Rc until something that needs
                 // locking is reached which is also the same type we get the lock_fn from
-                let lock = match lock_fn {
-                    Ok(lock_fn) => {
-                        let res = unsafe { lock_fn(v.data()) };
-                        let Ok(lock) = res else {
-                            return Err(MakeLockError {
-                                unchanged: v,
-                                kind: MakeLockErrorKind::LockFailure,
-                            });
-                        };
-                        lock
-                    }
-                    // TODO: write upgrade Weak<RwLock>??
-                    // Err(MakeLockError {
-                    //     unchanged,
-                    //     kind: MakeLockErrorKind::NotLockable,
-                    // }) => return Self::Not(unchanged).read()?.write(),
-                    Err(e) => {
-                        return Err(e);
-                    }
-                };
-                // SAFETY: creates access via the PtrMut returned from locking
-                // the smart pointer. 'mem outlives 'lock this means
-                // the returned SmartPointer<'mem> also outlives the mutable Poke<'lock>
-                let poke: Poke<'lock, 'facet> = unsafe {
-                    Poke::from_raw_parts(
-                        // if the input type was Arc<RwLock<String>> this willbe
-                        // a pointer to a String
-                        *lock.data(),
-                        shape
-                            .inner
-                            .expect("a smart pointer always has an inner shape"),
-                    )
-                };
-                let value: MaybeMut<'lock, 'facet> = MaybeMut::Mut(poke);
+                let (mut guards, mut value): (Vec<LockGuardType>, MaybeMut<'lock, 'facet>) =
+                    match lock_fn {
+                        Ok(lock_fn) => {
+                            let res = unsafe { lock_fn(v.data()) };
+                            let Ok(lock) = res else {
+                                return Err(MakeLockError {
+                                    unchanged: v,
+                                    kind: MakeLockErrorKind::LockFailure,
+                                });
+                            };
+                            // SAFETY: creates access via the PtrMut returned from locking
+                            // the smart pointer. 'mem outlives 'lock this means
+                            // the returned SmartPointer<'mem> also outlives the mutable Poke<'lock>
+                            let poke: Poke<'lock, 'facet> = unsafe {
+                                Poke::from_raw_parts(
+                                    // if the input type was Arc<RwLock<String>> this willbe
+                                    // a pointer to a String
+                                    *lock.data(),
+                                    shape
+                                        .inner
+                                        .expect("a smart pointer always has an inner shape"),
+                                )
+                            };
+
+                            (vec![lock.into()], MaybeMut::Mut(poke))
+                        }
+                        // TODO: write upgrade Weak<RwLock>??
+                        // try it as an upgrade instead
+                        Err(MakeLockError {
+                            unchanged,
+                            kind: MakeLockErrorKind::NotLockable,
+                        }) if let Def::Pointer(pointer) = unchanged.shape().def
+                            && let Some(upgrade_fn) = pointer.vtable.upgrade_into_fn
+                            && let Some(strong_shape) =
+                                def.into_pointer().ok().and_then(|x| x.strong()) =>
+                        {
+                            // if the strong shape is unsized, the Facet implementation of the type is wrong.
+                            let strong = strong_shape
+                                .allocate()
+                                .expect("strong pointer is always sized");
+
+                            // SAFETY: turning this peek into a PtrMut is okay,. because
+                            // the upgrade function only needs &self
+                            // in theory, the upgrade_fn signature could take a PtrConst as well.
+                            let ptr = unsafe { v.data().into_mut() };
+                            // SAFETY: Facet implementation of Weak garantees strong is the correct
+                            // shape of the strong part for this Weak
+                            let guard = unsafe { upgrade_fn(ptr, strong) }
+                                .map(|strong_instance| LockGuardType::Upgrade {
+                                    strong_shape,
+                                    allocation: strong_instance,
+                                })
+                                .ok_or(MakeLockError {
+                                    kind: MakeLockErrorKind::NotUpgradable,
+                                    unchanged: v,
+                                })?;
+                            // SAFETY: creates access via the PtrMut returned from locking
+                            // the smart pointer. 'mem outlives 'lock this means
+                            // the returned mutable Poke<'lock> lives shorter than 'mem
+                            let peek: Peek<'lock, 'facet> = unsafe {
+                                Peek::unchecked_new(
+                                    guard.data_const(),
+                                    shape
+                                        .inner
+                                        .expect("a smart pointer always has an inner shape"),
+                                )
+                            };
+
+                            (vec![guard], MaybeMut::Not(peek.innermost_peek()))
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    };
+
+                // unwrap remaining inner pointer types
+                // -> all types that have an inner type and are a pointer
+                while let Some(_inner) = value.as_peek().shape().inner
+                    && let Def::Pointer(def) = value.as_peek().shape().def
+                    // lock gets locked in the next write call
+                    && def.flags.contains(PointerFlags::LOCK) |
+                    // weak gets upgraded at the next write call
+                    def.flags.contains(PointerFlags::WEAK) |
+                    // atomics just get unwrapped in the next write call
+                    def.flags.contains(PointerFlags::ATOMIC)
+                {
+                    // FIXME: this is probably unsound
+                    // SAFETY:
+                    // later, we convert this Peek back to Peek<'lock> and we
+                    // limit all lifetimes to the shortest lifetime of the guard
+                    // for the sake of this method call, the lifetime does not
+                    // matter and only is there to satisfy the API
+                    let shorter_peek: Peek<'mem, 'facet> =
+                        unsafe { Peek::unchecked_new(value.as_peek().data(), value.shape()) };
+                    let shorter_maybe: MaybeMut<'_, '_> = MaybeMut::Not(shorter_peek);
+                    // we give this the same lifetime as lock
+                    let guard: Guard<'lock, 'facet> = shorter_maybe.write()?;
+                    // add all new guards to our guards. the order is correct here
+                    // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
+                    // this would lead to a double unlock later
+                    guards.extend(guard.guards);
+                    // SAFETY: set the new value to the inner most available value
+                    value = guard.data;
+                    // TODO:
+                }
                 Ok(Guard {
                     data: value,
-                    _guard: Some(LockGuardType::Write(lock)),
+                    guards,
                 })
             }
         }
@@ -291,7 +379,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
         // In this case, we just return the reference to the underlying type
         let Def::Pointer(pointer) = def else {
             return Ok(Guard {
-                _guard: None,
+                guards: Vec::new(),
                 data: MaybeMut::Not(v),
             });
         };
@@ -339,8 +427,8 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             });
         };
         // SAFETY: creates access via the PtrMut returned from locking
-        // the smart pointer. 'lock outlives 'mem this means
-        // the returned mutable Poke<'lock> also outlives the SmartPointer<'mem>
+        // the smart pointer. 'mem outlives 'lock this means
+        // the returned mutable Poke<'lock> lives shorter than 'mem
         let peek: Peek<'lock, 'facet> = unsafe {
             Peek::unchecked_new(
                 lock.data_const(),
@@ -351,7 +439,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
         };
         let value = MaybeMut::Not(peek);
         Ok(Guard {
-            _guard: Some(lock),
+            guards: vec![lock],
             data: value,
         })
     }
