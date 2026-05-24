@@ -92,44 +92,43 @@ impl eframe::App for App {
 
             ui.separator();
             // Read from `strong_inner` (outer RwLock -> inner RwLock -> SharedState)
-            if let Ok(outer_read) = self.strong_inner.read() {
-                if let Ok(inner_read) = outer_read.read() {
-                    ui.label(format!(
-                        "Inner state => message: {}, count: {}",
-                        inner_read.message, inner_read.count
-                    ));
-                }
+            if let Ok(outer_read) = self.strong_inner.read()
+                && let Ok(inner_read) = outer_read.read()
+            {
+                ui.label(format!(
+                    "Inner state => message: {}, count: {}",
+                    inner_read.message, inner_read.count
+                ));
             }
 
             // Read from `strong_outer` (Mutex -> Arc<RwLock<Mutex<SharedState>>> -> RwLock -> Mutex -> SharedState)
             if let Ok(outer_guard) = self.strong_outer.lock() {
                 let arc_rw = outer_guard.clone();
-                if let Ok(rw) = arc_rw.read() {
-                    if let Ok(ms) = rw.lock() {
-                        ui.label(format!(
-                            "Outer state => message: {}, count: {}",
-                            ms.message, ms.count
-                        ));
-                    }
+                if let Ok(rw) = arc_rw.read()
+                    && let Ok(ms) = rw.lock()
+                {
+                    ui.label(format!(
+                        "Outer state => message: {}, count: {}",
+                        ms.message, ms.count
+                    ));
                 }
             }
 
-            if ui.button("Increment via strong inner").clicked() {
-                if let Ok(mut outer_write) = self.strong_inner.write() {
-                    if let Ok(mut inner_write) = outer_write.write() {
-                        inner_write.count += 1;
-                    }
-                }
+            if ui.button("Increment via strong inner").clicked()
+                && let Ok(outer_write) = self.strong_inner.write()
+                && let Ok(mut inner_write) = outer_write.write()
+            {
+                inner_write.count += 1;
             }
 
-            if ui.button("Increment via strong outer").clicked() {
-                if let Ok(mut outer_guard) = self.strong_outer.lock() {
-                    let arc_rw = outer_guard.clone();
-                    if let Ok(mut rw_write) = arc_rw.write() {
-                        if let Ok(mut ms) = rw_write.lock() {
-                            ms.count += 1;
-                        }
-                    }
+            if ui.button("Increment via strong outer").clicked()
+                && let Ok(outer_guard) = self.strong_outer.lock()
+            {
+                let arc_rw = outer_guard.clone();
+                if let Ok(rw_write) = arc_rw.write()
+                    && let Ok(mut ms) = rw_write.lock()
+                {
+                    ms.count += 1;
                 }
             }
 
