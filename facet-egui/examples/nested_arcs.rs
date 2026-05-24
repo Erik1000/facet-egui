@@ -21,6 +21,7 @@ struct App {
     strong_inner: Arc<RwLock<RwLock<SharedState>>>,
     strong_outer: Arc<Mutex<Arc<RwLock<Mutex<SharedState>>>>>,
     model: Model,
+    extra: ExtraWeaks,
 }
 
 impl App {
@@ -46,12 +47,27 @@ impl App {
             weak_inner: Arc::downgrade(&strong_inner),
         };
 
+        let extra = ExtraWeaks {
+            weak_outer: Arc::downgrade(&strong_outer),
+            weak_inner: Arc::downgrade(&strong_inner),
+            weak_behind_rwlock: RwLock::new(Arc::downgrade(&strong_inner)),
+        };
+
         Self {
             strong_inner,
             strong_outer,
             model,
+            extra,
         }
     }
+}
+
+#[derive(Debug, Facet)]
+struct ExtraWeaks {
+    weak_outer: Weak<Mutex<Arc<RwLock<Mutex<SharedState>>>>>,
+    weak_inner: Weak<RwLock<RwLock<SharedState>>>,
+    // a Weak placed behind an RwLock to demonstrate "Weak behind RwLock"
+    weak_behind_rwlock: RwLock<Weak<RwLock<RwLock<SharedState>>>>,
 }
 
 impl eframe::App for App {
@@ -63,6 +79,13 @@ impl eframe::App for App {
 
             // Show the facet probe bound to the model (demonstrates upgrading Weak)
             FacetProbe::new(&mut self.model)
+                .readonly(false)
+                .expand_all(true)
+                .show(ui);
+
+            ui.separator();
+            ui.label("Extra Weaks (separate field):");
+            FacetProbe::new(&mut self.extra)
                 .readonly(false)
                 .expand_all(true)
                 .show(ui);
