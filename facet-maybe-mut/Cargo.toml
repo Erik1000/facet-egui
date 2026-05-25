@@ -11,9 +11,13 @@ categories = ["concurrency"]
 keywords = ["facet", "reflections", "rwlock", "mutex", "sync"]
 
 [dependencies]
-facet = { version = "0.46", default-features = false, features = ["alloc"] }
+facet = { version = "0.46", default-features = false, features = [
+    "alloc",
+    "std",
+] }
 facet-reflect = { version = "0.46", default-features = false, features = [
     "alloc",
+    "std",
 ] }
 
 derive_more = { version = "2.1", default-features = false, features = [

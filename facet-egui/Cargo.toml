@@ -26,6 +26,10 @@ required-features = ["std"]
 name = "probe_gallery"
 required-features = ["std"]
 
+[[example]]
+name = "weak_rwlock"
+required-features = ["std"]
+
 [features]
 default = []
 std = ["facet/std", "facet-reflect/std", "thiserror/std"]
