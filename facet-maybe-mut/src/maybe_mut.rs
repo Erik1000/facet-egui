@@ -148,8 +148,9 @@ pub struct Guard<'lock_mem, 'facet> {
     /// SAFETY: The pointer inside the [`LockGuardType`] MUST NOT be used
     /// since the data is already (mutable) available via `data`
     ///
-    /// The drop order must be the reverse of this [`Vec`] (pop until empty)
-    /// in order to guarantee the locks are released in the correct order.
+    /// Drop order is relevant! The Guards are in the reverse order of their
+    /// lifetime, meaning when dropping, from 0 to idx_max, guards
+    /// with shorter lifetimes are dropped first
     guards: Vec<LockGuardType>,
     /// This [`MaybeMut`] contains the [`Peek`] or [`Poke`] of the most inner,
     /// non lockable type.
@@ -268,7 +269,6 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
 
                             (vec![lock.into()], MaybeMut::Mut(poke))
                         }
-                        // TODO: write upgrade Weak<RwLock>??
                         // try it as an upgrade instead
                         Err(MakeLockError {
                             unchanged,
@@ -289,15 +289,27 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                             let ptr = unsafe { v.data().into_mut() };
                             // SAFETY: Facet implementation of Weak garantees strong is the correct
                             // shape of the strong part for this Weak
-                            let guard = unsafe { upgrade_fn(ptr, strong) }
-                                .map(|strong_instance| LockGuardType::Upgrade {
-                                    strong_shape,
-                                    allocation: strong_instance,
+                            let Some(guard) =
+                                unsafe { upgrade_fn(ptr, strong) }.map(|strong_instance| {
+                                    LockGuardType::Upgrade {
+                                        strong_shape,
+                                        allocation: strong_instance,
+                                    }
                                 })
-                                .ok_or(MakeLockError {
+                            else {
+                                // SAFETY:
+                                // [`UpgradeIntoFn`] guarantees that if None is returned,
+                                // the strong pointer is not initialised
+                                unsafe {
+                                    strong_shape
+                                        .deallocate_uninit(strong)
+                                        .expect("is sized and allocated by Shape")
+                                };
+                                return Err(MakeLockError {
                                     kind: MakeLockErrorKind::NotUpgradable,
                                     unchanged: v,
-                                })?;
+                                });
+                            };
                             // SAFETY: creates access via the PtrMut returned from locking
                             // the smart pointer. 'mem outlives 'lock this means
                             // the returned mutable Poke<'lock> lives shorter than 'mem
@@ -345,14 +357,15 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     let shorter_peek: Peek<'mem, 'facet> =
                         unsafe { Peek::unchecked_new(value.as_peek().data(), value.shape()) };
                     let shorter_maybe: MaybeMut<'mem, 'facet> = MaybeMut::Not(shorter_peek);
-                    let guard: Guard<'lock, 'facet> = match shorter_maybe.write() {
+                    let inner_guard: Guard<'lock, 'facet> = match shorter_maybe.write() {
                         Ok(g) => g,
                         Err(e) => {
                             // Peek v needs no Guards, drop them explicitly to free
                             // locks (they would be dropped by the return anyways)
-                            drop(guards);
                             // Discard `e.unchanged` (would dangle once `guards`
-                            // drops on return); substitute the original outer Peek
+                            // drops on return)
+                            drop(guards);
+                            // substitute the original outer Peek
                             // which is actually valid for 'mem.
                             return Err(MakeLockError {
                                 unchanged: v,
@@ -362,9 +375,11 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     };
                     // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
                     // this would lead to a double unlock later
-                    guards.extend(guard.guards);
+                    let mut inner_guards = inner_guard.guards;
+                    inner_guards.extend(guards);
+                    guards = inner_guards;
                     // SAFETY: set the new value to the inner most available value
-                    value = guard.data;
+                    value = inner_guard.data;
                 }
                 Ok(Guard {
                     data: value,
@@ -423,15 +438,26 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             let ptr = unsafe { v.data().into_mut() };
             // SAFETY: Facet implementation of Weak garantees strong is the correct
             // shape of the strong part for this Weak
-            Ok(unsafe { upgrade_fn(ptr, strong) }
-                .map(|strong_instance| LockGuardType::Upgrade {
+            let Some(guard) =
+                unsafe { upgrade_fn(ptr, strong) }.map(|strong_instance| LockGuardType::Upgrade {
                     strong_shape,
                     allocation: strong_instance,
                 })
-                .ok_or(MakeLockError {
+            else {
+                // SAFETY:
+                // [`UpgradeIntoFn`] guarantees that if None is returned,
+                // the strong pointer is not initialised
+                unsafe {
+                    strong_shape
+                        .deallocate_uninit(strong)
+                        .expect("is sized and allocated by Shape")
+                };
+                return Err(MakeLockError {
                     kind: MakeLockErrorKind::NotUpgradable,
                     unchanged: v,
-                })?)
+                });
+            };
+            Ok(guard)
         } else {
             return Err(MakeLockError {
                 unchanged: v,
@@ -487,7 +513,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             let shorter_peek: Peek<'mem, 'facet> =
                 unsafe { Peek::unchecked_new(value.as_peek().data(), value.shape()) };
             let shorter_maybe: MaybeMut<'mem, 'facet> = MaybeMut::Not(shorter_peek);
-            let guard: Guard<'lock, 'facet> = match shorter_maybe.read() {
+            let inner_guard: Guard<'lock, 'facet> = match shorter_maybe.read() {
                 Ok(g) => g,
                 Err(e) => {
                     // Peek v needs no Guards, drop them explicitly to free
@@ -504,9 +530,11 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
             };
             // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
             // this would lead to a double unlock later
-            guards.extend(guard.guards);
+            let mut inner_guards = inner_guard.guards;
+            inner_guards.extend(guards);
+            guards = inner_guards;
             // SAFETY: set the new value to the inner most available value
-            value = guard.data;
+            value = inner_guard.data;
         }
         Ok(Guard {
             data: value,
