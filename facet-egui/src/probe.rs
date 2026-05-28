@@ -4,7 +4,6 @@ use alloc::{
     borrow::{Cow, ToOwned},
     string::{String, ToString},
 };
-use core::ops::DerefMut;
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
@@ -176,6 +175,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn new<T>(value: impl Into<MaybeMutT<'mem, T>>) -> Self
     where
         T: Facet<'facet> + 'mem,
+        'facet: 'mem,
     {
         let v: MaybeMutT<'mem, T> = value.into();
         let inner: MaybeMut = match v {
@@ -195,6 +195,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     pub fn show<'lock>(self, ui: &mut Ui) -> Response
     where
         'mem: 'lock,
+        'facet: 'mem,
     {
         // Container-level skip: hide the entire probe
         if has_egui_skip(self.shape().attributes) {
@@ -239,7 +240,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             }
         };
 
-        let maybe_mut = guard.deref_mut();
+        let maybe_mut = &mut guard.as_maybe();
         // Anchor persistent widget state to a probe root id that does not depend
         // on current Ui ancestry, so tab moves don't reset collapsed sections.
         let ptr_salt = maybe_mut.as_peek().data().as_byte_ptr() as usize;
@@ -587,7 +588,10 @@ fn show_inner_rows(
 /// [`MaybeMut::Mut`] or wraps a lockable pointer (e.g. `RwLock`), this
 /// returns a [`Guard`] with mutable access. Otherwise it falls back to
 /// a read lock.
-fn lock_child<'mem, 'facet>(child: MaybeMut<'mem, 'facet>) -> Option<Guard<'mem, 'facet>> {
+fn lock_child<'mem, 'facet>(child: MaybeMut<'mem, 'facet>) -> Option<Guard<'mem, 'facet>>
+where
+    'facet: 'mem,
+{
     match child.write() {
         Ok(guard) => Some(guard),
         Err(e) if matches!(e.kind, MakeLockErrorKind::NotLockable) => {
@@ -791,7 +795,7 @@ fn show_inner_rows_poke_list(
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
-            let child = &mut *guard;
+            let child = &mut guard.as_maybe();
             let as_display = should_render_as_display(child.shape(), &[]);
             let prefix = |ui: &mut Ui| {
                 if !can_swap {
@@ -881,7 +885,7 @@ fn show_inner_rows_poke_struct(
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
-            let child = &mut *guard;
+            let child = &mut guard.as_maybe();
             if field.is_flattened() {
                 ui.push_id(row_id, |ui| {
                     got_inner |= show_inner_rows(
@@ -961,7 +965,7 @@ fn show_inner_rows_poke_enum(
             let Some(mut guard) = lock_child(MaybeMut::Mut(field_poke)) else {
                 continue;
             };
-            let child = &mut *guard;
+            let child = &mut guard.as_maybe();
             if field.is_flattened() {
                 ui.push_id(row_id, |ui| {
                     got_inner |= show_inner_rows(
@@ -1133,7 +1137,7 @@ fn show_inner_rows_peek_struct(
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         if field.is_flattened() {
             ui.push_id(row_id, |ui| {
                 got_inner |= show_inner_rows(
@@ -1202,7 +1206,7 @@ fn show_inner_rows_peek_enum(
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         if field.is_flattened() {
             ui.push_id(row_id, |ui| {
                 got_inner |= show_inner_rows(
@@ -1270,7 +1274,7 @@ fn show_inner_rows_peek_list(
         let Some(mut guard) = lock_child(MaybeMut::Not(item)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
@@ -1321,7 +1325,7 @@ fn show_inner_rows_peek_map(
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
@@ -1372,7 +1376,7 @@ fn show_inner_rows_peek_set(
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
@@ -1419,7 +1423,7 @@ fn show_inner_rows_peek_option(
         let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
             return false;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         return show_inner_rows(
             child,
             layout,
@@ -1452,7 +1456,7 @@ fn show_inner_rows_peek_tuple(
         let Some(mut guard) = lock_child(MaybeMut::Not(value)) else {
             continue;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         let as_display = should_render_as_display(child.shape(), &[]);
         let mut header = show_header(
             &label,
@@ -1499,7 +1503,7 @@ fn show_inner_rows_peek_pointer(
         let Some(mut guard) = lock_child(MaybeMut::Not(inner)) else {
             return false;
         };
-        let child = &mut *guard;
+        let child = &mut guard.as_maybe();
         return show_inner_rows(
             child,
             layout,

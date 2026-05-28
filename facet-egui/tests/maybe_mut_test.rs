@@ -71,7 +71,7 @@ fn multi_thread() -> color_eyre::Result<()> {
         println!("getting engaged");
         std::thread::sleep(Duration::from_secs(2));
         let mut guard = MaybeMut::Not(Peek::new(&amos)).write().unwrap();
-        if let MaybeMut::Mut(amos) = &mut *guard {
+        if let MaybeMut::Mut(amos) = &mut guard.as_maybe() {
             amos.get_mut::<Being>().unwrap().status = Status::Engaged;
             println!("engaged!!!")
         }
@@ -80,7 +80,7 @@ fn multi_thread() -> color_eyre::Result<()> {
         std::thread::sleep(Duration::from_secs(5));
         println!("wedding is starting");
         let mut guard = MaybeMut::Not(Peek::new(&amos)).write().unwrap();
-        if let MaybeMut::Mut(amos) = &mut *guard {
+        if let MaybeMut::Mut(amos) = &mut guard.as_maybe() {
             amos.get_mut::<Being>().unwrap().status = Status::Married { since: 1771870398 };
             println!("married!!!!!!!!!!!!!!!!!")
         }

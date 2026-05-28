@@ -1,4 +1,50 @@
-use derive_more::{Deref, DerefMut, From};
+//! This asserts that you cannot move out of the Guard
+//!
+//! ```compile_fail
+//! use std::sync::{Arc, RwLock};
+//!
+//! use facet::Facet;
+//! use facet_maybe_mut::MaybeMut;
+//! use facet_reflect::Peek;
+//!
+//! #[derive(Debug, Facet, Default)]
+//! struct User {
+//!     id: u32,
+//!     name: String,
+//! }
+//!
+//! fn main() {
+//!    let strong = Arc::new(RwLock::new(User {
+//!        id: 123,
+//!        name: String::new(),
+//!    }));
+//!    let w = Arc::downgrade(&strong);
+//!    let dummy = User {
+//!        id: 787,
+//!        name: String::new(),
+//!    };
+//!
+//!    let mut guard: facet_maybe_mut::Guard<'_, '_> = MaybeMut::Not(Peek::new(&w)).read().unwrap();
+//!    let bad: MaybeMut<'_, '_> =
+//!        std::mem::replace(&mut guard.as_maybe(), MaybeMut::Not(Peek::new(&dummy)));
+//!
+//!    drop(strong);
+//!    //drop(guard);
+//!
+//!    assert_eq!(w.strong_count(), 1);
+//!
+//!    let user = bad.as_peek().get::<User>().unwrap();
+//!    assert_eq!(user.id, 123);
+//!    drop(guard);
+//!    // this wont work which is correct, otherwise it would be UB
+//!    let user = bad.as_peek().get::<User>().unwrap();
+//!    assert_eq!(w.strong_count(), 0);
+//! }
+//! ```
+
+use std::{mem::ManuallyDrop, ops::DerefMut};
+
+use derive_more::From;
 use facet::{Def, PointerFlags, PtrConst, PtrMut, ReadLockResult, Shape, WriteLockResult};
 use facet_reflect::{Peek, Poke};
 
@@ -137,9 +183,11 @@ impl Drop for LockGuardType {
 /// The contained [`MaybeMut`] is NOT guaranteed to be [`Mut`](MaybeMut::Mut)
 ///
 /// For example, RwLock also needs a lock and guard for a read.
-///
-#[derive(Deref, DerefMut)]
 pub struct Guard<'lock_mem, 'facet> {
+    /// This [`MaybeMut`] contains the [`Peek`] or [`Poke`] of the most inner,
+    /// non lockable type.
+    // declaration order matters: data must be dropped first before any guards
+    data: ManuallyDrop<MaybeMut<'lock_mem, 'facet>>,
     /// Dropping the guard handles freeing the lock
     ///
     /// If this is empty, the `data` can be accessed directly and there is no
@@ -151,11 +199,77 @@ pub struct Guard<'lock_mem, 'facet> {
     /// The drop order must be the reverse of this [`Vec`] (pop until empty)
     /// in order to guarantee the locks are released in the correct order.
     guards: Vec<LockGuardType>,
-    /// This [`MaybeMut`] contains the [`Peek`] or [`Poke`] of the most inner,
-    /// non lockable type.
-    #[deref]
-    #[deref_mut]
-    data: MaybeMut<'lock_mem, 'facet>,
+}
+
+impl Drop for Guard<'_, '_> {
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.data);
+        }
+        while let Some(pop) = self.guards.pop() {
+            drop(pop);
+        }
+    }
+}
+
+impl<'lock, 'facet> Guard<'lock, 'facet> {
+    /// Returns the Shape of the underlying [`MaybeMut`]
+    pub fn shape(&self) -> &'static Shape {
+        self.data.shape()
+    }
+    /// It is always possible to get a [`Peek`] from a [`Guard`]
+    pub fn as_peek<'s>(&'s self) -> Peek<'s, 'facet> {
+        match &*self.data {
+            MaybeMut::Mut(m) => m.as_peek(),
+            MaybeMut::Not(n) => *n,
+        }
+    }
+
+    /// If the [`Guard`] contains a [`Poke`], this will return
+    /// `Some(Poke)` assuming [`Poke`] can be reborrowed.
+    pub fn as_poke<'s>(&'s mut self) -> Option<Poke<'s, 'facet>> {
+        if let MaybeMut::Mut(m) = self.data.deref_mut() {
+            m.try_reborrow()
+        } else {
+            None
+        }
+    }
+    /// Returns either a [`Poke`] or a [`Peek`] depending on whats available
+    /// via the guard (read lock or write lock)
+    pub fn as_maybe<'s>(&'s mut self) -> MaybeMut<'s, 'facet> {
+        match self.data.deref_mut() {
+            MaybeMut::Mut(m) => {
+                let data = m.data();
+                let shape: &'static Shape = m.shape();
+                if let Some(poke) = m.try_reborrow() {
+                    MaybeMut::Mut(poke)
+                } else {
+                    // SAFETY: "downgrading" a single Poke into a single Peek (which is guaranteed via borrow of &mut self) is always safe since Poke has a superset of capabilities of Peek (&mut T can do everything &T)
+                    let peek = unsafe { Peek::unchecked_new(data, shape) };
+                    MaybeMut::Not(peek)
+                }
+            }
+            MaybeMut::Not(peek) => MaybeMut::Not(*peek),
+        }
+    }
+
+    /// Takes out all [`LockGuardType`]s out of this [`Guard`] as well as the
+    /// [`MaybeMut`] data.
+    /// The [`Guard`] is effectively empty.
+    unsafe fn take(mut self) -> (Vec<LockGuardType>, MaybeMut<'lock, 'facet>) {
+        //let data = ManuallyDrop::into_inner(self.data);
+        //let guards = ManuallyDrop::into_inner(self.guards);
+        // SAFETY: data is moved out of Guard
+        // all LockGuardTypes are also "moved" out of the Vec, but the Vec
+        // itself is retained (as it is replaced)
+        let v = (core::mem::take(&mut self.guards), unsafe {
+            ManuallyDrop::take(&mut self.data)
+        });
+        // SAFETY:
+        // do not run Guards Drop impl which would lead to a double free later, because it manually drops `data` but data is moved out of
+        core::mem::forget(self);
+        v
+    }
 }
 
 impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
@@ -188,6 +302,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
     pub fn write<'lock>(self) -> Result<Guard<'lock, 'facet>, MakeLockError<'mem, 'facet>>
     where
         'mem: 'lock,
+        'facet: 'lock,
     {
         match self {
             // if we already have a mut this is a no op
@@ -201,7 +316,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                 } else {
                     Ok(Guard {
                         guards: Vec::new(),
-                        data: v.into(),
+                        data: ManuallyDrop::new(v.into()),
                     })
                 }
             }
@@ -360,14 +475,16 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                             });
                         }
                     };
+                    // SAFETY: this moves out all values from guard. Guard is no longer used afterwards
+                    let (inner_guards, data) = unsafe { guard.take() };
                     // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
                     // this would lead to a double unlock later
-                    guards.extend(guard.guards);
+                    guards.extend(inner_guards);
                     // SAFETY: set the new value to the inner most available value
-                    value = guard.data;
+                    value = data;
                 }
                 Ok(Guard {
-                    data: value,
+                    data: ManuallyDrop::new(value),
                     guards,
                 })
             }
@@ -399,7 +516,7 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
         let Def::Pointer(pointer) = def else {
             return Ok(Guard {
                 guards: Vec::new(),
-                data: MaybeMut::Not(v),
+                data: ManuallyDrop::new(MaybeMut::Not(v)),
             });
         };
 
@@ -502,14 +619,17 @@ impl<'mem, 'facet> MaybeMut<'mem, 'facet> {
                     });
                 }
             };
+
+            // SAFETY: moves out all values from guard, Guard is no longer used afterwards
+            let (inner_guards, data) = unsafe { guard.take() };
             // SAFETY: the values must be moved to the new vec not cloned and NOT dropped.
             // this would lead to a double unlock later
-            guards.extend(guard.guards);
+            guards.extend(inner_guards);
             // SAFETY: set the new value to the inner most available value
-            value = guard.data;
+            value = data;
         }
         Ok(Guard {
-            data: value,
+            data: ManuallyDrop::new(value),
             guards,
         })
     }

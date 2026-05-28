@@ -45,7 +45,7 @@ struct Being {
 let value = Arc::new(RwLock::new(Being { age: 20 }));
 
 let mut guard = MaybeMut::Not(Peek::new(&value)).write().unwrap();
-if let MaybeMut::Mut(poke) = &mut *guard {
+if let MaybeMut::Mut(poke) = &mut guard.as_maybe() {
     poke.get_mut::<Being>().unwrap().age += 1;
 }
 # }
