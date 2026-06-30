@@ -72,7 +72,7 @@ struct ExtraWeaks {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Nested Arc/Weak + Mutex + RwLock example");
             ui.label("Probe the `Model` below; it contains Weak pointers to both levels.");
             ui.separator();

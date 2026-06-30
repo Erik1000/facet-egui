@@ -1,6 +1,6 @@
 [package]
 name = "facet-egui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Erik Tesar <erik@erik-tesar.com>"]
 license = "MIT OR Apache-2.0"
@@ -36,7 +36,7 @@ std = ["facet/std", "facet-reflect/std", "thiserror/std"]
 [dependencies]
 facet-maybe-mut.workspace = true
 
-egui = { version = "0.34", default-features = false }
+egui = { version = "0.35", default-features = false }
 facet = { version = "0.46", default-features = false, features = ["alloc"] }
 facet-reflect = { version = "0.46", default-features = false, features = [
     "alloc",
@@ -53,8 +53,8 @@ thiserror = { version = "2", default-features = false }
 log = "0.4"
 
 [dev-dependencies]
-eframe = { version = "0.34" }
+eframe = { version = "0.35" }
 color-eyre = { version = "0.6" }
-egui-probe = { version = "0.11.0", features = ["derive"] }
+egui-probe = { version = "0.12.0", features = ["derive"] }
 facet-testhelpers = "0.46"
 image = { version = "0.25", default-features = false, features = ["png"] }

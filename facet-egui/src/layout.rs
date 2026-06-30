@@ -1,4 +1,4 @@
-use core::hash::Hash;
+use core::{fmt::Debug, hash::Hash};
 
 // -- ProbeHeader: collapsible section state, ported from egui-probe --
 
@@ -169,7 +169,7 @@ impl ProbeLayout {
     pub fn inner_label_ui(
         &mut self,
         indent: usize,
-        id_salt: impl Hash,
+        id_salt: impl Hash + Debug,
         ui: &mut egui::Ui,
         add_content: impl FnOnce(&mut egui::Ui) -> egui::Response,
     ) -> egui::Response {
@@ -208,7 +208,7 @@ impl ProbeLayout {
 
     pub fn inner_value_ui(
         &mut self,
-        id_salt: impl Hash,
+        id_salt: impl Hash + Debug,
         ui: &mut egui::Ui,
         add_content: impl FnOnce(&mut egui::Ui),
     ) {
