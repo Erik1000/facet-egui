@@ -4,6 +4,7 @@ use alloc::{
     borrow::{Cow, ToOwned},
     string::{String, ToString},
 };
+use core::fmt::Debug;
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
 use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
@@ -130,7 +131,7 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
     ///
     /// Use this when the probe can move in the UI hierarchy (e.g. draggable tabs),
     /// so collapse/expand state remains stable.
-    pub fn with_id_source(mut self, id_source: impl core::hash::Hash) -> Self {
+    pub fn with_id_source(mut self, id_source: impl core::hash::Hash + Debug) -> Self {
         self.id = Some(Id::new(id_source));
         self
     }

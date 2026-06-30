@@ -3,4 +3,4 @@ members = ["facet-egui", "facet-maybe-mut"]
 resolver = "3"
 
 [workspace.dependencies]
-facet-maybe-mut = { path = "./facet-maybe-mut", version = "0.1" }
+facet-maybe-mut = { path = "./facet-maybe-mut", version = "0.2" }
