@@ -1,6 +1,6 @@
 [package]
 name = "facet-egui"
-version = "0.3.0"
+version = "0.35.0"
 edition = "2024"
 authors = ["Erik Tesar <erik@erik-tesar.com>"]
 license = "MIT OR Apache-2.0"
@@ -37,8 +37,8 @@ std = ["facet/std", "facet-reflect/std", "thiserror/std"]
 facet-maybe-mut.workspace = true
 
 egui = { version = "0.35", default-features = false }
-facet = { version = "0.46", default-features = false, features = ["alloc"] }
-facet-reflect = { version = "0.46", default-features = false, features = [
+facet = { workspace = true, default-features = false, features = ["alloc"] }
+facet-reflect = { workspace = true, default-features = false, features = [
     "alloc",
 ] }
 

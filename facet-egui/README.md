@@ -15,6 +15,8 @@
 
 An [egui](https://github.com/emilk/egui) inspector/editor widget for any type that implements [`Facet`](https://github.com/facet-rs/facet). Derive `Facet` on your types and get a full property editor with no additional boilerplate.
 
+Versioing follows `egui`s version numbers.
+
 This demonstrates both **editable** and **readonly** modes side-by-side:
 
 ![FacetProbe Screenshot](examples/probe_gallery.png)

@@ -17,6 +17,8 @@ Utility crate for working with `facet` values that may be readonly (`Peek`) or m
 
 `MaybeMut` is useful when you want one code path that can inspect values and mutate when possible.
 
+Version number follows `facet`s versioning (the version numbers are equal)
+
 ## Installation
 
 ```toml
