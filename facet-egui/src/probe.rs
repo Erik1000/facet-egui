@@ -2038,7 +2038,9 @@ impl TextBuffer for CharBuffer {
         }
     }
 
-    fn delete_char_range(&mut self, _char_range: core::ops::Range<egui::text::CharIndex>) {}
+    fn delete_char_range(&mut self, _char_range: core::ops::Range<egui::text::CharIndex>) {
+        self.set(' ');
+    }
 
     fn type_id(&self) -> core::any::TypeId {
         core::any::TypeId::of::<Self>()
@@ -2145,7 +2147,7 @@ fn show_inline_poke_scalar(
         ScalarType::Char => {
             if let Ok(v) = poke.get_mut::<char>() {
                 let mut buf = CharBuffer::new(*v);
-                let r = ui.add(TextEdit::singleline(&mut buf));
+                let r = ui.add(TextEdit::singleline(&mut buf).char_limit(1));
                 if r.changed() {
                     *v = buf.value;
                 }
