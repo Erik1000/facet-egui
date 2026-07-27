@@ -2025,7 +2025,12 @@ impl TextBuffer for CharBuffer {
     }
 
     fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        // use char::MIN to signal an "empty" char
+        if self.value == char::MIN {
+            ""
+        } else {
+            core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        }
     }
 
     fn insert_text(&mut self, text: &str, _char_index: egui::text::CharIndex) -> usize {
@@ -2039,7 +2044,7 @@ impl TextBuffer for CharBuffer {
     }
 
     fn delete_char_range(&mut self, _char_range: core::ops::Range<egui::text::CharIndex>) {
-        // self.set(' ');
+        self.set(char::MIN);
     }
 
     fn type_id(&self) -> core::any::TypeId {
