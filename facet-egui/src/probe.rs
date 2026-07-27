@@ -7,7 +7,9 @@ use alloc::{
 use core::fmt::Debug;
 
 use derive_more::{Deref, DerefMut as DeriveDerefMut, From};
-use egui::{Align, Checkbox, Color32, Id, Layout, Response, TextEdit, Ui, UiBuilder, WidgetText};
+use egui::{
+    Align, Checkbox, Color32, Id, Layout, Response, TextBuffer, TextEdit, Ui, UiBuilder, WidgetText,
+};
 use facet::{Def, Facet, ListDef, MapDef, OptionDef, ScalarType, SetDef, Type, UserType};
 use facet_reflect::{
     HasFields, Partial, Peek, PeekEnum, PeekListLike, PeekMap, PeekOption, PeekPointer, PeekSet,
@@ -1989,6 +1991,60 @@ fn try_change_variant(poke: &mut Poke<'_, '_>, variant_idx: usize) -> bool {
     true
 }
 
+/// An [`egui::TextBuffer`] wrapper around a single [`char`].
+///
+/// Editing behaves as a replace: any inserted text sets the char to the first
+/// character of that text, so typing or pasting swaps the value in place.
+/// Deletion is a no-op because a `char` must always hold a value.
+struct CharBuffer {
+    value: char,
+    buf: [u8; 4],
+    len: usize,
+}
+
+impl CharBuffer {
+    fn new(value: char) -> Self {
+        let mut this = Self {
+            value,
+            buf: [0; 4],
+            len: 0,
+        };
+        this.set(value);
+        this
+    }
+
+    fn set(&mut self, value: char) {
+        self.value = value;
+        self.len = value.encode_utf8(&mut self.buf).len();
+    }
+}
+
+impl TextBuffer for CharBuffer {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+
+    fn insert_text(&mut self, text: &str, _char_index: egui::text::CharIndex) -> usize {
+        match text.chars().next() {
+            Some(c) => {
+                self.set(c);
+                1
+            }
+            None => 0,
+        }
+    }
+
+    fn delete_char_range(&mut self, _char_range: core::ops::Range<egui::text::CharIndex>) {}
+
+    fn type_id(&self) -> core::any::TypeId {
+        core::any::TypeId::of::<Self>()
+    }
+}
+
 fn show_inline_poke_scalar(
     poke: &mut Poke<'_, '_>,
     scalar_type: ScalarType,
@@ -2087,9 +2143,13 @@ fn show_inline_poke_scalar(
             }
         }
         ScalarType::Char => {
-            if let Ok(v) = poke.get::<char>() {
-                let s = v.to_string();
-                return ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()));
+            if let Ok(v) = poke.get_mut::<char>() {
+                let mut buf = CharBuffer::new(*v);
+                let r = ui.add(TextEdit::singleline(&mut buf));
+                if r.changed() {
+                    *v = buf.value;
+                }
+                return r;
             }
         }
         // str is unsized, fall through to display
