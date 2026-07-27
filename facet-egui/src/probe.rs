@@ -2039,7 +2039,7 @@ impl TextBuffer for CharBuffer {
     }
 
     fn delete_char_range(&mut self, _char_range: core::ops::Range<egui::text::CharIndex>) {
-        self.set(' ');
+        // self.set(' ');
     }
 
     fn type_id(&self) -> core::any::TypeId {
