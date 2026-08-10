@@ -8,3 +8,7 @@ facet-maybe-mut = { path = "./facet-maybe-mut", version = "0.50.0-rc.5" }
 facet = { version = "0.50.0-rc.5", default-features = false, features = [] }
 facet-reflect = { version = "0.50.0-rc.5", default-features = false, features = [
 ] }
+
+[patch.crates-io]
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.50.0-rc.5" }
+facet-reflect = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.50.0-rc.5" }

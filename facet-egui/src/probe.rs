@@ -26,20 +26,20 @@ use crate::{
 fn has_egui_skip(attributes: &[facet::Attr]) -> bool {
     attributes
         .iter()
-        .any(|a| matches!((a.ns, a.key), (Some("egui"), "skip")))
+        .any(|a| matches!((a.ns(), a.key()), (Some("egui"), "skip")))
 }
 
 /// Returns `true` if the given attributes slice contains `Attr::AsDisplay`.
 fn has_egui_as_display(attributes: &[facet::Attr]) -> bool {
     attributes
         .iter()
-        .any(|a| matches!((a.ns, a.key), (Some("egui"), "as_display")))
+        .any(|a| matches!((a.ns(), a.key()), (Some("egui"), "as_display")))
 }
 
 /// Returns the `Attr::Rename` value from the attributes, if present.
 fn egui_rename(attributes: &[facet::Attr]) -> Option<&'static str> {
     attributes.iter().find_map(|a| {
-        if matches!((a.ns, a.key), (Some("egui"), "rename")) {
+        if matches!((a.ns(), a.key()), (Some("egui"), "rename")) {
             a.get_as::<&'static str>().copied()
         } else {
             None
@@ -210,14 +210,14 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
         let shape_attrs = self.shape().attributes;
         let readonly = shape_attrs
             .iter()
-            .any(|a| matches!((a.ns, a.key), (Some("egui"), "readonly")))
+            .any(|a| matches!((a.ns(), a.key()), (Some("egui"), "readonly")))
             || self.read_only;
 
         // Check for expand_all attribute (or use self.expand_all)
         let expand_all = self.expand_all
             || shape_attrs
                 .iter()
-                .any(|a| matches!((a.ns, a.key), (Some("egui"), "expand_all")));
+                .any(|a| matches!((a.ns(), a.key()), (Some("egui"), "expand_all")));
 
         let mut guard: Guard<'lock, 'facet> = if readonly {
             let Ok(read) = self.inner.read() else {
