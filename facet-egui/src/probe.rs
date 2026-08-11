@@ -1892,7 +1892,7 @@ fn show_inline_poke_enum(poke: &mut Poke<'_, '_>, ui: &mut Ui, id: Id) -> Respon
         .into_enum()
         .ok()
         .and_then(|e| e.active_variant().ok())
-        .map(|v| v.effective_name())
+        .map(|v| egui_rename(v.attributes).unwrap_or_else(|| v.effective_name()))
         .unwrap_or("?");
 
     let mut changed = false;
@@ -1900,8 +1900,9 @@ fn show_inline_poke_enum(poke: &mut Poke<'_, '_>, ui: &mut Ui, id: Id) -> Respon
         .selected_text(active_name)
         .show_ui(ui, |ui| {
             for (idx, variant) in enum_type.variants.iter().enumerate() {
-                let variant_name: &str = variant.effective_name();
-                let is_active = variant_name == active_name;
+                let variant_name: &str =
+                    egui_rename(variant.attributes).unwrap_or_else(|| variant.effective_name());
+                let is_active = variant.effective_name() == active_name;
                 if ui.selectable_label(is_active, variant_name).clicked()
                     && !is_active
                     && try_change_variant(poke, idx)
