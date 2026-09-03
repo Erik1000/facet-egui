@@ -1181,6 +1181,7 @@ dependencies = [
  "const-fnv1a-hash",
  "iddqd",
  "impls",
+ "uuid",
 ]
 
 [[package]]
@@ -1199,6 +1200,7 @@ dependencies = [
  "image",
  "log",
  "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]

@@ -122,6 +122,7 @@ fn render(ui: &mut egui::Ui, profile: &mut Data, readonly_data: &Data, data: &mu
 - **Map/BTreeMap editing** — Insert and remove key-value pairs
 - **Smart pointer traversal** — Transparent navigation through `Arc`, `Rc`, `Box`, etc.
 - **Automatic lock handling** — Read from or write to `Arc<RwLock<T>>` and `Arc<Mutex<T>>` with automatic lock acquisition
+- **`uuid::Uuid` editing** — Editable/read-only UUID text field (enable the `uuid` feature)
 - **Field-level control via attributes** — Per-field customization using `#[facet(egui::...)]`
 - **Readonly mode** — Display data without allowing modifications
 - **Struct/enum exploration** — Drill down into complex nested types

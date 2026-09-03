@@ -85,6 +85,13 @@ fn should_render_as_display(shape: &facet::Shape, attributes: &[facet::Attr]) ->
     has_egui_as_display(attributes) || has_egui_as_display(shape.attributes)
 }
 
+/// Returns `true` if the shape is `uuid::Uuid` (only when the `uuid` feature
+/// is enabled).
+#[cfg(feature = "uuid")]
+fn is_uuid(shape: &facet::Shape) -> bool {
+    shape.id == <uuid::Uuid as Facet>::SHAPE.id
+}
+
 /// The container that stores a [`MaybeMut`] of the type `T` that should be shown
 /// in the [`Ui`](egui::Ui)
 #[must_use = "use [`FacetProbe::show`] to display the probe in the [`Ui`]"]
@@ -1551,6 +1558,11 @@ fn show_inline_poke(
         return ui.label(alloc::format!("{}", poke.as_peek()));
     }
 
+    #[cfg(feature = "uuid")]
+    if is_uuid(poke.shape()) {
+        return show_inline_poke_uuid(poke, ui, id);
+    }
+
     if let Some(scalar_type) = poke.as_peek().scalar_type() {
         return show_inline_poke_scalar(poke, scalar_type, ui);
     }
@@ -2053,6 +2065,59 @@ impl TextBuffer for CharBuffer {
     }
 }
 
+/// Show an editable single-line text field for a mutable `uuid::Uuid`.
+///
+/// The typed text is parsed on every change; the underlying value is only
+/// updated when the input is a valid UUID. Invalid input is kept in a
+/// per-widget scratch buffer (and tinted red) until it parses or focus is lost.
+#[cfg(feature = "uuid")]
+fn show_inline_poke_uuid(poke: &mut Poke<'_, '_>, ui: &mut Ui, id: Id) -> Response {
+    let Ok(v) = poke.get_mut::<uuid::Uuid>() else {
+        return ui.colored_label(Color32::RED, "Uuid access failure");
+    };
+
+    let buf_id = id.with("uuid_buf");
+    let mut buf = ui
+        .data_mut(|d| d.get_temp::<String>(buf_id))
+        .unwrap_or_else(|| v.to_string());
+
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        if uuid::Uuid::parse_str(buf.trim()).is_err() {
+            ui.visuals_mut().override_text_color = Some(Color32::RED);
+        }
+        let resp = ui.add(TextEdit::singleline(&mut buf).desired_width(260.0));
+
+        if let Ok(parsed) = uuid::Uuid::parse_str(buf.trim())
+            && parsed != *v
+        {
+            *v = parsed;
+            changed = true;
+        }
+
+        // Keep partial/invalid input while editing; drop it once focus is lost
+        // so the field snaps back to the canonical value string.
+        if resp.has_focus() {
+            ui.data_mut(|d| d.insert_temp(buf_id, buf.clone()));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(buf_id));
+        }
+    });
+
+    let mut r = r.response;
+    if changed {
+        r.mark_changed();
+    }
+    r
+}
+
+/// Show a read-only single-line text field for a `uuid::Uuid`.
+#[cfg(feature = "uuid")]
+fn show_inline_peek_uuid(peek: Peek<'_, '_>, ui: &mut Ui) -> Response {
+    let s = alloc::format!("{peek}");
+    ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()).desired_width(260.0))
+}
+
 fn show_inline_poke_scalar(
     poke: &mut Poke<'_, '_>,
     scalar_type: ScalarType,
@@ -2191,6 +2256,11 @@ fn show_inline_poke_scalar(
 fn show_inline_peek(peek: Peek<'_, '_>, ui: &mut Ui, id: Id, as_display: bool) -> Response {
     if as_display || should_render_as_display(peek.shape(), &[]) {
         return ui.label(alloc::format!("{}", peek));
+    }
+
+    #[cfg(feature = "uuid")]
+    if is_uuid(peek.shape()) {
+        return show_inline_peek_uuid(peek, ui);
     }
 
     if let Some(scalar_type) = peek.scalar_type() {
