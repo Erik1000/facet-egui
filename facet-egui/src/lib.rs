@@ -7,7 +7,7 @@ mod layout;
 use facet_maybe_mut::{self as maybe_mut};
 
 mod probe;
-pub use facet_maybe_mut::MaybeMut;
+pub use facet_maybe_mut::{Guard, MakeLockError, MakeLockErrorKind, MaybeMut};
 pub use probe::{FacetProbe, MaybeMutT};
 facet::define_attr_grammar! {
     ns "egui";
