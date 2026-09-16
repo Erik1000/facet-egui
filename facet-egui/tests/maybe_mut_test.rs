@@ -45,13 +45,12 @@ fn single_threaded() -> color_eyre::Result<()> {
 
     let not_mut_yet = MaybeMut::Not(Peek::new(&value));
     let mut now_mut = not_mut_yet.write().unwrap();
-    match &mut *now_mut {
-        MaybeMut::Mut(m) => {
-            m.get_mut::<Being>().unwrap().age += 1;
-        }
-        MaybeMut::Not(..) => panic!("it should be mutable"),
-    }
-
+    now_mut
+        .as_poke()
+        .expect("it should be mutable")
+        .get_mut::<Being>()
+        .expect("valid type")
+        .age += 1;
     Ok(())
 }
 

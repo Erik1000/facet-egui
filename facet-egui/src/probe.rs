@@ -250,6 +250,14 @@ impl<'mem, 'facet> FacetProbe<'mem, 'facet> {
             }
         };
 
+        #[cfg(feature = "custom_ui")]
+        if let Some(handler) = crate::get_registered_handler(*guard.shape()) {
+            let mut callback = handler.lock();
+            let resp = (*callback)(guard, ui);
+            drop(callback);
+            return resp;
+        }
+
         let maybe_mut = &mut guard.as_maybe();
         // Anchor persistent widget state to a probe root id that does not depend
         // on current Ui ancestry, so tab moves don't reset collapsed sections.
@@ -965,8 +973,7 @@ fn show_inner_rows_poke_enum(
         return false;
     }
     let mut got_inner = false;
-    for idx in 0..field_count {
-        let field = &variant.data.fields[idx];
+    for (idx, field) in variant.data.fields.iter().enumerate() {
         if has_egui_skip(field.attributes) {
             continue;
         }
@@ -2115,7 +2122,10 @@ fn show_inline_poke_uuid(poke: &mut Poke<'_, '_>, ui: &mut Ui, id: Id) -> Respon
 #[cfg(feature = "uuid")]
 fn show_inline_peek_uuid(peek: Peek<'_, '_>, ui: &mut Ui) -> Response {
     let s = alloc::format!("{peek}");
-    ui.add_enabled(false, TextEdit::singleline(&mut s.as_str()).desired_width(260.0))
+    ui.add_enabled(
+        false,
+        TextEdit::singleline(&mut s.as_str()).desired_width(260.0),
+    )
 }
 
 fn show_inline_poke_scalar(

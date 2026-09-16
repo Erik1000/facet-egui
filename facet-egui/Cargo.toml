@@ -34,6 +34,8 @@ required-features = ["std"]
 default = []
 std = ["facet/std", "facet-reflect/std", "thiserror/std"]
 uuid = ["dep:uuid", "facet/uuid"]
+custom_ui = ["std"]
+
 [dependencies]
 facet-maybe-mut.workspace = true
 
