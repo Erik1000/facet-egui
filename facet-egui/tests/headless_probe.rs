@@ -6,9 +6,10 @@ use facet_egui::FacetProbe;
 
 fn render_shapes(mut add_probe: impl FnMut(&mut egui::Ui)) -> usize {
     let ctx = egui::Context::default();
-    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         add_probe(ui);
     });
+    output.textures_delta.clear();
     output.shapes.len()
 }
 
@@ -87,7 +88,7 @@ fn expand_all_renders_nested_data_without_panicking() {
     assert!(shapes > 0);
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "custom_ui")]
 #[test]
 fn custom_handler_retains_state_and_respects_readonly() {
     use facet_egui::{get_registered_handler, register_custom_ui, register_custom_ui_shape};
@@ -105,25 +106,32 @@ fn custom_handler_retains_state_and_respects_readonly() {
     let captured = observations.clone();
     let mut calls = 0usize;
     let non_sync_capture = Cell::new(0usize);
-    assert!(register_custom_ui::<CustomValue>(move |mut guard, ui| {
-        calls += 1;
-        non_sync_capture.set(calls);
-        assert_eq!(guard.shape(), CustomValue::SHAPE);
-        captured
-            .write()
-            .unwrap()
-            .push((non_sync_capture.get(), guard.as_poke().is_some()));
-        register_custom_ui_shape(*OtherValue::SHAPE, Box::new(|_guard, ui| ui.label("other")));
-        let mut response = ui.label("custom");
-        response.mark_changed();
-        response
-    })
-    .is_none());
+    assert!(
+        register_custom_ui::<CustomValue>(move |mut guard, ui| {
+            calls += 1;
+            non_sync_capture.set(calls);
+            assert_eq!(guard.shape(), CustomValue::SHAPE);
+            captured
+                .write()
+                .unwrap()
+                .push((non_sync_capture.get(), guard.as_poke().is_some()));
+            register_custom_ui_shape(*OtherValue::SHAPE, Box::new(|_guard, ui| ui.label("other")));
+            let mut response = ui.label("custom");
+            response.mark_changed();
+            response
+        })
+        .is_none()
+    );
 
     let mut value = CustomValue { value: 7 };
     render_shapes(|ui| {
         assert!(FacetProbe::new(&mut value).show(ui).changed());
-        assert!(FacetProbe::new(&mut value).readonly(true).show(ui).changed());
+        assert!(
+            FacetProbe::new(&mut value)
+                .readonly(true)
+                .show(ui)
+                .changed()
+        );
     });
 
     let recorded = observations.read().unwrap();
@@ -133,8 +141,7 @@ fn custom_handler_retains_state_and_respects_readonly() {
         assert_eq!(writable, index % 2 == 0);
     }
     let original = get_registered_handler(*CustomValue::SHAPE).unwrap();
-    let replaced = register_custom_ui::<CustomValue>(|_guard, ui| ui.label("replacement"))
-        .unwrap();
+    let replaced = register_custom_ui::<CustomValue>(|_guard, ui| ui.label("replacement")).unwrap();
     assert!(Arc::ptr_eq(&original, &replaced));
     assert!(!Arc::ptr_eq(
         &original,
